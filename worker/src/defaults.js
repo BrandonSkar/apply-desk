@@ -81,6 +81,8 @@ export const PROFILE_FIELDS = [
   ['how_heard', 'How did you hear about the job? (default)', 'Common answers'],
   ['gender', 'Gender', 'Voluntary self-ID'],
   ['race', 'Race / ethnicity', 'Voluntary self-ID'],
+  ['sexual_orientation', 'Sexual orientation', 'Voluntary self-ID'],
+  ['transgender', 'Transgender? (Yes / No)', 'Voluntary self-ID'],
   ['veteran', 'Veteran status', 'Voluntary self-ID'],
   ['disability', 'Disability status', 'Voluntary self-ID'],
 ];
@@ -95,6 +97,8 @@ export const EMPTY_PROFILE = {
   notice_period: '2 weeks',
   gender: 'Decline',
   race: 'Decline',
+  sexual_orientation: 'Decline',
+  transgender: 'Decline',
   veteran: 'Decline',
   disability: 'Decline',
 };

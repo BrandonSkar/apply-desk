@@ -103,16 +103,34 @@ test('voluntary self-ID follows the profile, in the form\'s own wording', () => 
         'No, I do not have a disability and have not had one in the past',
         'I do not want to answer',
       ]),
-      sel('r', 'Race', ['Asian', 'White', 'Decline To Self Identify']),
+      sel('r', 'Race', ['Asian', 'Black or African American (Not Hispanic or Latino)', 'White (Not Hispanic or Latino)', 'Decline To Self Identify']),
+      sel('h', 'Are you Hispanic/Latino?', ['Yes', 'No', 'Decline To Self Identify']),
+      sel('so', 'What sexual orientation do you most closely identify with?', ['Bisexual', 'Gay', 'Straight / Heterosexual', "I don't wish to answer"]),
+      sel('t', 'Are you a person of transgender experience?', ['Yes', 'No', "I don't wish to answer"]),
+      sel('l', 'Do you identify as a member of the LGBTQ+ community?', ['Yes', 'No', "I don't wish to answer"]),
     ],
   };
-  const p = { ...profile, gender: 'Male', veteran: 'Not a veteran', disability: 'No disability', race: 'Decline' };
+  const p = {
+    ...profile, gender: 'Male', veteran: 'Not a veteran', disability: 'No disability',
+    race: 'Decline', sexual_orientation: 'Decline', transgender: 'Decline',
+  };
   const { values } = autofill(form, p);
   assert.equal(values.g, 'Male');
   assert.equal(values.gi, 'Man');
   assert.equal(values.v, 'I am not a protected veteran');
   assert.equal(values.d, 'No, I do not have a disability and have not had one in the past');
   assert.equal(values.r, 'Decline To Self Identify');
+  assert.equal(values.h, 'Decline To Self Identify');
+  assert.equal(values.so, "I don't wish to answer");
+  assert.equal(values.l, "I don't wish to answer");
+
+  const all = autofill(form, { ...p, race: 'White', sexual_orientation: 'Heterosexual', transgender: 'No' }).values;
+  assert.equal(all.r, 'White (Not Hispanic or Latino)');
+  assert.equal(all.h, 'No');
+  assert.equal(all.so, 'Straight / Heterosexual');
+  assert.equal(all.t, 'No');
+  assert.equal(all.l, 'No');
+  assert.equal(all.gi, 'Man');
   // Declining everything still declines.
   const none = autofill(form, profile).values;
   assert.equal(none.g, 'Decline to self-identify');

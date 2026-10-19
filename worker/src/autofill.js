@@ -53,6 +53,24 @@ const disability = (v) => {
   if (/^(no|none)\b|no disability|do not have/i.test(v.trim())) return [/^no\b|do(n'?t| not) have a disability/i, DECLINE];
   return [v, DECLINE];
 };
+const STRAIGHT = /^(heterosexual|straight)$/i;
+const orientation = (v) => {
+  if (declined(v)) return [DECLINE];
+  if (STRAIGHT.test(v.trim())) return [/^heterosexual/i, /^straight/i, /heterosexual|straight/i, DECLINE];
+  return [v, DECLINE];
+};
+const transgender = (v) => (declined(v) ? [DECLINE] : /^n/i.test(v.trim()) ? [NO, DECLINE] : /^y/i.test(v.trim()) ? [YES, DECLINE] : [v, DECLINE]);
+// "Do you identify as LGBTQ+?" follows from the two answers above.
+const lgbtq = (p) =>
+  !declined(p.sexual_orientation) && STRAIGHT.test(p.sexual_orientation.trim()) && /^n/i.test((p.transgender || '').trim())
+    ? [NO, DECLINE]
+    : [DECLINE];
+// A yes/no "Are you Hispanic or Latino?" On self-ID forms the race categories (White, Asian, ...) mean
+// not Hispanic or Latino. No DECLINE fallback here, so a race list that mentions Hispanic falls to the race rule.
+const hispanic = (race) => {
+  if (declined(race)) return [DECLINE];
+  return /hispanic|latin/i.test(race) ? [YES] : [NO];
+};
 const fullName = (p) => [p.first_name, p.last_name].filter(Boolean).join(' ');
 const inWA = (p) => /^(wa|washington)$/i.test((p.state || '').trim());
 
@@ -95,8 +113,12 @@ const AUTO_RULES = [
   [/(state|province).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,40}(state|province)|state of residence/i, (p) => stateNames(p.state)],
   [/zip|postal code/i, (p) => p.zip],
   [/street address|^address/i, (p) => p.address],
-  [/sexual orientation|transgender|lgbt/i, () => [DECLINE], true],
+  // These come before the gender rule: "Do you identify as transgender?" contains "gender".
+  [/transgender|trans experience/i, (p) => transgender(p.transgender), true],
+  [/lgbt|queer/i, (p) => lgbtq(p), true],
+  [/sexual orientation/i, (p) => orientation(p.sexual_orientation), true],
   [/gender|\bsex\b/i, (p) => gender(p.gender), true],
+  [/hispanic|latin[oax]/i, (p) => hispanic(p.race), true],
   [/race|ethnic|hispanic|latin/i, (p) => eeo(p.race), true],
   [/veteran/i, (p) => veteran(p.veteran), true],
   [/disabilit/i, (p) => disability(p.disability), true],
