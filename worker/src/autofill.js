@@ -69,6 +69,14 @@ const lgbtq = (p) =>
   !declined(p.sexual_orientation) && STRAIGHT.test(p.sexual_orientation.trim()) && /^n/i.test((p.transgender || '').trim())
     ? [NO, DECLINE]
     : [DECLINE];
+// "Are you (or a relative) a government official / ever employed by a government?" Not clearance or
+// eligibility questions ("able to work on government contracts"); those are left for you.
+const government = (p, q) => {
+  if (!/^\s*n/i.test(p.government_ties || '')) return null;
+  if (/clearance|eligib|able to|citizen|contract/i.test(q.label)) return null;
+  return [NO, /\b(have not|haven.t|never|not|none)\b/i, 'No'];
+};
+
 // A yes/no "Are you Hispanic or Latino?" On self-ID forms the race categories (White, Asian, ...) mean
 // not Hispanic or Latino. No DECLINE fallback here, so a race list that mentions Hispanic falls to the race rule.
 const hispanic = (race) => {
@@ -104,6 +112,9 @@ const AUTO_RULES = [
   [/^(legal )?full name$|^name$/i, (p) => fullName(p)],
   [/^e-?mail/i, (p) => p.email],
   [/^(phone|mobile|cell)/i, (p) => p.phone],
+  [/(government|public|foreign) official|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
+  [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
+  [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
   [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
   [/sponsor/i, (p) => yesNo(p.needs_sponsorship)],
   [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],

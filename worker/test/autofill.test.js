@@ -179,6 +179,32 @@ test('SMS opt-ins are declined or left unchecked; other consent boxes still get 
   assert.equal(autofill(form, { ...profile, sms_opt_in: 'Yes' }).values.a, 'Yes');
 });
 
+test('government ties: answered No, but clearance and eligibility questions are left alone', () => {
+  const yn = (name, label) => ({ name, label, type: 'select', required: true, options: [{ label: 'Yes', value: '1' }, { label: 'No', value: '0' }] });
+  const form = {
+    questions: [
+      yn('a', 'Are you a current or former government official?'),
+      yn('b', 'Have you ever been employed by a federal, state, or local government entity?'),
+      yn('c', 'Is any member of your immediate family a government official?'),
+      { name: 'd', label: 'Are you now, or have you been in the last two years, a government employee?', type: 'select', required: true,
+        options: ['Yes, I am or have been a government employee', 'No, I have not been a government employee'].map((l) => ({ label: l, value: l })) },
+      yn('e', 'Are you eligible to obtain a U.S. government security clearance?'),
+      yn('f', 'Are you able to work on government contracts?'),
+      { name: 'g', label: 'Do you have any relatives who are government officials? If so, list them.', type: 'text', required: false },
+    ],
+  };
+  const { values, bucket } = autofill(form, { ...profile, government_ties: 'No' });
+  assert.equal(values.a, 'No');
+  assert.equal(values.b, 'No');
+  assert.equal(values.c, 'No');
+  assert.equal(values.d, 'No, I have not been a government employee');
+  assert.equal(values.e, undefined);
+  assert.equal(values.f, undefined);
+  assert.equal(values.g, 'No');
+  assert.equal(bucket.a, 'auto');
+  assert.equal(autofill(form, { ...profile, government_ties: 'Yes' }).values.a, undefined);
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');
