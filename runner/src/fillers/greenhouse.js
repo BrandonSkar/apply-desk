@@ -3,7 +3,7 @@
 // are checkboxes, demographic questions use the question id.
 import { byId, checkValues, isEmpty, pickCombo, visibleTexts, waitOutcome } from './common.js';
 
-export async function fill(page, { form, answers, resumePath }) {
+export async function fill(page, { form, answers, resumePath, prefs = {} }) {
   await page.locator('#first_name').waitFor({ timeout: 45_000 });
   const missing = [];
 
@@ -62,7 +62,64 @@ export async function fill(page, { form, answers, resumePath }) {
       missing.push(`${q.label} (${err.message.split('\n')[0].slice(0, 80)})`);
     }
   }
+  await fillHistory(page, prefs.history || {}, missing);
   return { missing };
+}
+
+// Greenhouse's built-in Employment and Education sections. They aren't in the public question list,
+// so they're filled from the profile whenever the form has them.
+const DEGREES = [
+  [/bachelor/i, "Bachelor's Degree"],
+  [/master.*business|mba/i, 'Master of Business Administration (M.B.A.)'],
+  [/master/i, "Master's Degree"],
+  [/associate/i, "Associate's Degree"],
+  [/ph\.?d|doctor of philosophy/i, 'Doctor of Philosophy (Ph.D.)'],
+  [/high school|ged/i, 'High School'],
+];
+
+async function fillHistory(page, p, missing) {
+  const field = async (id, label, value, kind = 'text') => {
+    const el = page.locator(byId(id));
+    if (!(await el.count()) || !(await el.isVisible().catch(() => false)) || (await el.isDisabled().catch(() => false))) return;
+    const required = (await el.getAttribute('aria-required')) === 'true';
+    try {
+      if (!value) throw new Error('not in your profile');
+      if (kind === 'combo' || (await el.getAttribute('role')) === 'combobox') await pickCombo(page, el, value);
+      else await el.fill(String(value));
+    } catch (err) {
+      if (required) missing.push(`${label} (${err.message.split('\n')[0].slice(0, 60)})`);
+    }
+  };
+
+  if (await page.locator(byId('company-name-0')).count()) {
+    await field('company-name-0', 'Employment: company', p.current_company);
+    await field('title-0', 'Employment: title', p.current_title);
+    await field('start-date-month-0', 'Employment: start month', p.job_start_month, 'combo');
+    await field('start-date-year-0', 'Employment: start year', p.job_start_year);
+    const current = page.locator(byId('current-role-0_1'));
+    if (/^\s*y/i.test(p.job_current || '') && (await current.count()) && !(await current.isChecked())) await current.check();
+    // With "Current role" checked these are disabled and skipped.
+    await field('end-date-month-0', 'Employment: end month', '', 'combo');
+    await field('end-date-year-0', 'Employment: end year', '');
+  }
+
+  if (await page.locator(byId('school--0')).count()) {
+    // Each company has its own school list; "Other" is "0 - Other" on some and "Other" on others.
+    const school = page.locator(byId('school--0'));
+    let picked = false;
+    for (const name of [p.school, '0 - Other', 'Other'].filter(Boolean)) {
+      picked = await pickCombo(page, school, name).then(() => true, () => false);
+      if (picked) break;
+    }
+    if (!picked && (await school.getAttribute('aria-required')) === 'true') missing.push('Education: school');
+  }
+  const degree = DEGREES.find(([re]) => re.test(p.degree || ''))?.[1] || p.degree;
+  await field('degree--0', 'Education: degree', degree, 'combo');
+  await field('discipline--0', 'Education: field of study', p.discipline, 'combo');
+  await field('end-year--0', 'Education: graduation year', p.grad_year);
+  await field('end-month--0', 'Education: graduation month', '', 'combo');
+  await field('start-year--0', 'Education: start year', '');
+  await field('start-month--0', 'Education: start month', '', 'combo');
 }
 
 export async function isDone(page) {

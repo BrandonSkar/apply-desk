@@ -149,7 +149,7 @@ async function handle({ job, form, answers, prefs = {} }) {
   const page = await context.newPage();
   try {
     await page.goto(job.apply_url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    const { missing } = await filler.fill(page, { job, form, answers, resumePath: cfg.resumePath });
+    const { missing } = await filler.fill(page, { job, form, answers, resumePath: cfg.resumePath, prefs });
     if (!prefs.smsOptIn) {
       const n = await uncheckSmsOptIns(page).catch(() => 0);
       if (n) log(`  Unchecked ${n} text-message opt-in${n === 1 ? '' : 's'}.`);

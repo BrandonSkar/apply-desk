@@ -516,7 +516,7 @@ function sentRow(job) {
 
 // ---------- Profile ----------
 
-const YES_NO = new Set(['work_authorized', 'needs_sponsorship', 'willing_to_relocate', 'sms_opt_in', 'government_ties']);
+const YES_NO = new Set(['work_authorized', 'needs_sponsorship', 'willing_to_relocate', 'sms_opt_in', 'government_ties', 'job_current']);
 
 async function renderProfile() {
   const panel = $('#tab-profile');

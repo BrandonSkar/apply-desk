@@ -251,7 +251,15 @@ async function claim(env, body) {
     form: JSON.parse(job.form),
     answers: JSON.parse(job.answers),
     // Preferences the helper applies to parts of a form that aren't in the question list.
-    prefs: { smsOptIn: wantsSms(profile), email: profile.email },
+    prefs: {
+      smsOptIn: wantsSms(profile),
+      email: profile.email,
+      // For forms' built-in Employment / Education sections, which Greenhouse's API doesn't list.
+      history: Object.fromEntries(
+        ['current_company', 'current_title', 'job_start_month', 'job_start_year', 'job_current', 'school', 'degree', 'discipline', 'grad_year']
+          .map((k) => [k, profile[k] || '']),
+      ),
+    },
   };
 }
 
