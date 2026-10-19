@@ -1,0 +1,6 @@
+{
+  "siteUrl": "https://example.com/jobs",
+  "token": "the RUNNER_TOKEN secret you set on the worker",
+  "resumePath": "C:\\Users\\you\\Documents\\resume.pdf",
+  "browser": "chrome"
+}

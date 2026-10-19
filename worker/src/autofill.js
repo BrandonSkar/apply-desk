@@ -1,0 +1,256 @@
+// Answers what it can from your profile and your past answers, so the page only asks what's new.
+// Every question lands in one bucket:
+//   auto      - answered from your profile with confidence (collapsed on the page)
+//   suggested - prefilled from a past answer or a sensible default, shown so you can check it
+//   open      - required and unanswered: you need to answer it
+//   optional  - not required and unanswered
+
+const DECLINE = /decline|don.?t wish|do not wish|prefer not|not to (answer|say|disclose|self)|choose not|rather not|not wish to/i;
+const YES = /^\s*yes\b/i;
+const NO = /^\s*no\b/i;
+
+// Fields that come from the profile; they're never stored in the answer bank.
+export const PROFILE_DRIVEN = new Set([
+  'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'name', 'org', 'location', 'resume',
+  'urls[LinkedIn]', 'urls[GitHub]', 'urls[Portfolio]', 'urls[Other]',
+]);
+
+// Regexes pick a dropdown option; the trailing string is the answer for a text box.
+const STATES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut',
+  DE: 'Delaware', DC: 'District of Columbia', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois',
+  IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana',
+  NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York',
+  NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania',
+  RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah',
+  VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+};
+const stateNames = (s) => {
+  const v = (s || '').trim();
+  return [STATES[v.toUpperCase()], v].filter(Boolean);
+};
+
+const yesNo = (v) => (/^\s*y/i.test(v || '') ? [YES, 'Yes'] : [NO, /^i (do not|don't|will not|won't)/i, 'No']);
+const eeo = (v) => (!v || /^decline/i.test(v) ? [DECLINE] : [v, DECLINE]);
+const fullName = (p) => [p.first_name, p.last_name].filter(Boolean).join(' ');
+const inWA = (p) => /^(wa|washington)$/i.test((p.state || '').trim());
+
+const BY_NAME = {
+  first_name: (p) => p.first_name,
+  last_name: (p) => p.last_name,
+  preferred_name: (p) => p.preferred_name || p.first_name,
+  email: (p) => p.email,
+  phone: (p) => p.phone,
+  name: (p) => fullName(p),
+  org: (p) => p.current_company,
+  location: (p) => [p.city, p.state].filter(Boolean).join(', '),
+  'urls[LinkedIn]': (p) => p.linkedin,
+  'urls[GitHub]': (p) => p.github,
+  'urls[Portfolio]': (p) => p.website,
+};
+
+// [label test, answer(profile, question), selectOnly?]
+const AUTO_RULES = [
+  [/linkedin/i, (p) => p.linkedin],
+  [/github/i, (p) => p.github],
+  [/^(personal )?(website|portfolio)|website url|portfolio (url|link)/i, (p) => p.website],
+  [/preferred (first )?name/i, (p) => p.preferred_name || p.first_name],
+  [/^(legal )?first name/i, (p) => p.first_name],
+  [/^(legal )?last name|surname/i, (p) => p.last_name],
+  [/^(legal )?full name$|^name$/i, (p) => fullName(p)],
+  [/^e-?mail/i, (p) => p.email],
+  [/^(phone|mobile|cell)/i, (p) => p.phone],
+  [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
+  [/sponsor/i, (p) => yesNo(p.needs_sponsorship)],
+  [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],
+  [/(countr(y|ies)).{0,60}(anticipate|plan|intend|expect|will be).{0,20}work/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  [/(country|countries).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,30}country|current country|country of residence/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  [/(current|most recent|previous|present).{0,25}(employer|company)|^company name/i, (p) => p.current_company],
+  [/(current|most recent|previous|present).{0,25}(job )?title|current (role|position)/i, (p) => p.current_title],
+  [/city,? (and )?state|(current|permanent|home) (work )?location|where are you (currently )?(located|based)|where do you (currently )?live/i,
+    (p) => [p.city && p.state ? `${p.city}, ${p.state}` : '', ...stateNames(p.state)]],
+  [/^(current )?city$/i, (p) => p.city],
+  [/^state(\/province)?$/i, (p) => (/^[a-z]{2}$/i.test(p.state || '') ? [p.state, ...stateNames(p.state)] : stateNames(p.state))],
+  [/(state|province).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,40}(state|province)|state of residence/i, (p) => stateNames(p.state)],
+  [/zip|postal code/i, (p) => p.zip],
+  [/street address|^address/i, (p) => p.address],
+  [/sexual orientation|transgender|lgbt/i, () => [DECLINE], true],
+  [/gender|\bsex\b/i, (p) => eeo(p.gender), true],
+  [/race|ethnic|hispanic|latin/i, (p) => eeo(p.race), true],
+  [/veteran/i, (p) => eeo(p.veteran), true],
+  [/disabilit/i, (p) => eeo(p.disability), true],
+];
+
+const SUGGESTED_RULES = [
+  // Follow-ups to a question answered "no" ("If yes, who referred you?").
+  [/^if (yes|so)\b/i, () => [/^n\/?a\b|not applicable|^none/i, 'N/A']],
+  [/(citizen|resident) of any of the following|sanctioned|embargoed/i, () => [NO, 'No']],
+  [/(live|located|based|reside).{0,25}(in|near|around).{0,30}(seattle|bellevue|redmond|puget|washington|\bwa\b)/i, (p) => (inWA(p) ? [YES, 'Yes'] : yesNo(p.willing_to_relocate))],
+  [/relocat/i, (p) => yesNo(p.willing_to_relocate)],
+  [/how many years|years of.{0,40}experience|experience.{0,20}years/i, (p) => ({ years: p.years_experience })],
+  [/salary|compensation|pay (expectation|requirement|range)|expected pay/i, (p) => p.desired_salary],
+  [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
+    (p) => [p.how_heard, /company (web)?site|career'?s? ?(web)?site|careers? page|job (site|posting)|website/i, /job board/i, /linkedin/i, /^other/i]],
+  [/referr|who referred|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
+  [/(previously|ever|currently|formerly|have you).{0,40}(work|employ)|former employee|current employee/i,
+    () => [NO, /\b(have not|haven.t|never|not previously|not been)\b/i, 'No']],
+  [/non-?compete|non-?solicit|restrictive covenant/i, () => [NO, 'No']],
+  [/accommodation/i, () => [NO, 'No']],
+  [/(able|willing|comfortable).{0,30}(work|commute|come).{0,40}(office|on-?site|hybrid|in person|days)/i, () => [YES, 'Yes']],
+  [/time ?zone/i, () => [/pacific/i, /\bPST\b|\bPT\b/, 'Pacific Time']],
+  [/start date|when can you start|available to start|notice period|earliest/i, (p) => p.notice_period],
+  [/degree|education level|highest level of education/i, (p) => [p.degree, /bachelor/i]],
+  [/school|university|college/i, (p) => p.school],
+  [/acknowledge|consent|i agree|agree to|i have read|privacy|certify|confirm|attest|understand/i, () => [/acknowledge|agree|^yes|confirm|^i have|^i do|accept|understand|certify/i], true],
+];
+
+export function pickOption(options, wanted) {
+  if (!options?.length) return null;
+  for (const w of Array.isArray(wanted) ? wanted : [wanted]) {
+    if (w == null || w === '') continue;
+    if (w instanceof RegExp) {
+      const o = options.find((x) => w.test(x.label));
+      if (o) return o.label;
+      continue;
+    }
+    const s = String(w).trim().toLowerCase();
+    const exact = options.find((x) => x.label.trim().toLowerCase() === s);
+    if (exact) return exact.label;
+    const starts = options.find((x) => x.label.trim().toLowerCase().startsWith(s));
+    if (starts && s.length > 1) return starts.label;
+    const inside = s.length > 3 && options.find((x) => x.label.toLowerCase().includes(s));
+    if (inside) return inside.label;
+  }
+  return null;
+}
+
+// "1-3 years", "4+ years", "Over 6 years", "Less than 1 year" -> the option that contains `years`.
+export function pickYears(options, years) {
+  const y = Number(String(years).replace(/[^\d.]/g, ''));
+  if (!options?.length || !String(years).trim() || !Number.isFinite(y)) return null;
+  for (const o of options) {
+    const t = o.label.toLowerCase();
+    let lo = null;
+    let hi = null;
+    let m;
+    if ((m = /(\d+)\s*(?:-|–|to)\s*(\d+)/.exec(t))) [lo, hi] = [+m[1], +m[2]];
+    else if ((m = /(?:over|more than|greater than)\s*(\d+)/.exec(t))) [lo, hi] = [+m[1] + 1, Infinity];
+    else if ((m = /(\d+)\s*\+|(\d+) or more|at least (\d+)/.exec(t))) [lo, hi] = [+(m[1] || m[2] || m[3]), Infinity];
+    else if ((m = /(?:less than|under|fewer than)\s*(\d+)/.exec(t))) [lo, hi] = [0, +m[1] - 0.01];
+    else if ((m = /^(\d+)\b/.exec(t))) [lo, hi] = [+m[1], +m[1]];
+    else if (/^none|no experience/.test(t)) [lo, hi] = [0, 0];
+    if (lo != null && y >= lo && y <= hi) return o.label;
+  }
+  return null;
+}
+
+// Turn a rule's answer into a value that fits the question, or null.
+function fit(q, ans) {
+  if (ans == null || ans === '') return null;
+  if (q.type === 'select' || q.type === 'multiselect') {
+    const label = ans.years !== undefined ? pickYears(q.options, ans.years) : pickOption(q.options, ans);
+    if (!label) return null;
+    return q.type === 'multiselect' ? [label] : label;
+  }
+  if (ans.years !== undefined) return ans.years ? String(ans.years) : null;
+  if (Array.isArray(ans)) {
+    const s = ans.find((x) => typeof x === 'string' && x);
+    return s || null;
+  }
+  return typeof ans === 'string' && ans.trim() ? ans : null;
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function bankKey(label, company, type) {
+  let s = String(label || '');
+  if (company) s = s.replace(new RegExp(escapeRe(company), 'gi'), '{company}');
+  return `${s.toLowerCase().replace(/[^a-z0-9{} ]+/g, ' ').replace(/\s+/g, ' ').trim()}|${type}`;
+}
+
+export function toBank(value, company) {
+  if (!company) return value;
+  const re = new RegExp(escapeRe(company), 'gi');
+  return Array.isArray(value) ? value.map((v) => String(v).replace(re, '{company}')) : String(value).replace(re, '{company}');
+}
+
+export function fromBank(value, company) {
+  const sub = (v) => String(v).replace(/\{company\}/g, company || 'your company');
+  return Array.isArray(value) ? value.map(sub) : sub(value);
+}
+
+// A banked answer still has to fit this form (the option labels can differ between companies).
+function fitBanked(q, value) {
+  if (q.type === 'select') return typeof value === 'string' ? pickOption(q.options, [value]) : null;
+  if (q.type === 'multiselect') {
+    const labels = (Array.isArray(value) ? value : [value]).map((v) => pickOption(q.options, [v])).filter(Boolean);
+    return labels.length ? labels : null;
+  }
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * @param form    { questions: [...] }
+ * @param profile the profile object
+ * @param bank    Map of bankKey -> stored answer (already JSON-parsed)
+ * @param company the job's company, for {company} substitution
+ */
+export function autofill(form, profile, bank = new Map(), company = '') {
+  const values = {};
+  const bucket = {};
+  for (const q of form?.questions || []) {
+    const set = (v, b) => {
+      values[q.name] = v;
+      bucket[q.name] = b;
+    };
+
+    if (q.kind === 'resume') { set('__resume__', 'auto'); continue; }
+    if (q.type === 'file') { bucket[q.name] = q.required ? 'open' : 'optional'; continue; }
+
+    if (BY_NAME[q.name]) {
+      const v = fit(q, BY_NAME[q.name](profile));
+      if (v) { set(v, 'auto'); continue; }
+    }
+
+    let done = false;
+    for (const [re, answer, selectOnly] of AUTO_RULES) {
+      if (!re.test(q.label)) continue;
+      if (selectOnly && q.type !== 'select' && q.type !== 'multiselect') continue;
+      const v = fit(q, answer(profile, q));
+      if (v) { set(v, 'auto'); done = true; break; }
+    }
+    if (done) continue;
+
+    const banked = bank.get(bankKey(q.label, company, q.type));
+    if (banked !== undefined) {
+      const v = fitBanked(q, fromBank(banked, company));
+      if (v) { set(v, 'suggested'); continue; }
+    }
+
+    for (const [re, answer, selectOnly] of SUGGESTED_RULES) {
+      if (!re.test(q.label)) continue;
+      if (selectOnly && q.type !== 'select' && q.type !== 'multiselect') continue;
+      const v = fit(q, answer(profile, q));
+      if (v) { set(v, 'suggested'); done = true; break; }
+    }
+    if (done) continue;
+
+    if (q.section === 'demographic' && (q.type === 'select' || q.type === 'multiselect')) {
+      const v = fit(q, [DECLINE]);
+      if (v) { set(v, 'auto'); continue; }
+    }
+
+    bucket[q.name] = q.required ? 'open' : 'optional';
+  }
+  return { values, bucket };
+}
+
+// The required questions that still have no answer.
+export function missingRequired(form, answers) {
+  return (form?.questions || []).filter((q) => {
+    if (!q.required || q.kind === 'resume') return false;
+    const v = answers[q.name];
+    return v == null || v === '' || (Array.isArray(v) && v.length === 0);
+  });
+}

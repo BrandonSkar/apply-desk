@@ -1,0 +1,20 @@
+{
+  "name": "apply-desk-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs on your PC: submits the applications you answered on the Apply Desk page, and serves the Apply Desk MCP server for Claude.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/helper.js",
+    "login": "node src/helper.js --login",
+    "mcp": "node src/mcp.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "playwright": "^1.64.1",
+    "zod": "^4.6.7"
+  }
+}

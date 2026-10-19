@@ -1,0 +1,26 @@
+// Apply Desk at brandonskar.com/jobs (see src/index.js). Deploy with `npm run deploy` from this folder.
+// Secrets, set once with `npx wrangler secret put <NAME>`: APP_PASSWORD, SESSION_SECRET, RUNNER_TOKEN.
+{
+  "name": "apply-desk",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  // The worker answers every request (login, API) and serves the page files from public/ itself.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "apply-desk", "database_id": "5158101e-3f25-484d-9b1b-cfb2edabdae8" }
+  ],
+  // Each run checks a few job sources; every 5 minutes covers all of them in about two hours.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // Only /jobs. The site's main Worker answers the rest of brandonskar.com, and routes run in front of it.
+  "routes": [
+    { "pattern": "brandonskar.com/jobs*", "zone_name": "brandonskar.com" }
+  ],
+  "workers_dev": false,
+  "observability": { "enabled": true }
+}

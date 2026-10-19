@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+.dev.vars
+
+# The helper's private files: token, resume path, its own browser profile (logins), and screenshots.
+runner/config.local.json
+runner/.browser-profile/
+runner/screenshots/
+
+*.log
+.DS_Store
+Thumbs.db

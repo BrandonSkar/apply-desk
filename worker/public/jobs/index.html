@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Apply Desk</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/jobs/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Apply Desk</div>
+  <div class="goal" aria-live="polite">
+    <div class="goal-text"><strong id="goal-count">0</strong> of <span id="goal-target">10</span> today</div>
+    <div class="meter" aria-hidden="true"><div class="meter-fill" id="goal-fill"></div></div>
+  </div>
+  <div class="helper" id="helper" title="The helper runs on your PC and submits what you send.">
+    <span class="dot" aria-hidden="true"></span><span id="helper-text">Helper offline</span>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button role="tab" id="t-queue" data-tab="queue" aria-controls="tab-queue">Queue <span class="pill" id="n-queue"></span></button>
+  <button role="tab" id="t-manual" data-tab="manual" aria-controls="tab-manual">Amazon &amp; Microsoft <span class="pill" id="n-manual"></span></button>
+  <button role="tab" id="t-sent" data-tab="sent" aria-controls="tab-sent">Sent <span class="pill attn" id="n-attn"></span></button>
+  <button role="tab" id="t-profile" data-tab="profile" aria-controls="tab-profile">Profile</button>
+  <button role="tab" id="t-settings" data-tab="settings" aria-controls="tab-settings">Settings</button>
+</nav>
+
+<main>
+  <section id="tab-queue" role="tabpanel" aria-labelledby="t-queue"></section>
+  <section id="tab-manual" role="tabpanel" aria-labelledby="t-manual" hidden></section>
+  <section id="tab-sent" role="tabpanel" aria-labelledby="t-sent" hidden></section>
+  <section id="tab-profile" role="tabpanel" aria-labelledby="t-profile" hidden></section>
+  <section id="tab-settings" role="tabpanel" aria-labelledby="t-settings" hidden></section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="/jobs/app.js"></script>
+</body>
+</html>
