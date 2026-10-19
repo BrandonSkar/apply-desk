@@ -37,10 +37,17 @@ const context = await chromium.launchPersistentContext(cfg.profileDir, {
 context.setDefaultTimeout(15_000);
 
 if (process.argv.includes('--login')) {
+  // The sites' home pages look the same signed in or out; an application from the queue goes to the real sign-in.
+  const { jobs = [] } = await api('/jobs?view=manual').catch(() => ({}));
+  const amazon = jobs.find((j) => j.source === 'amazon')?.apply_url || 'https://account.amazon.jobs/';
+  const microsoft = jobs.find((j) => j.source === 'microsoft')?.apply_url || 'https://apply.careers.microsoft.com/careers';
   const first = context.pages()[0] || (await context.newPage());
-  await first.goto('https://www.amazon.jobs/en/');
-  await (await context.newPage()).goto('https://apply.careers.microsoft.com/careers');
-  log('This is the helper’s own browser. Sign in to Amazon Jobs and Microsoft Careers (one tab each), then close the window.');
+  await first.goto(amazon);
+  const ms = await context.newPage();
+  await ms.goto(microsoft);
+  await ms.getByRole('button', { name: /apply now/i }).or(ms.getByRole('link', { name: /apply now/i })).first().click().catch(() => {});
+  log('This is the helper’s own browser. Sign in on both tabs (Amazon Jobs and Microsoft Careers).');
+  log('Once each tab shows the application form, close the window. Don’t submit anything here.');
   await new Promise((resolve) => context.on('close', resolve));
   process.exit(0);
 }
