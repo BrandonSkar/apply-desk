@@ -37,9 +37,10 @@ const context = await chromium.launchPersistentContext(cfg.profileDir, {
 context.setDefaultTimeout(15_000);
 
 if (process.argv.includes('--login')) {
-  const page = context.pages()[0] || (await context.newPage());
-  await page.goto('https://www.amazon.jobs/en/');
-  log('This is the helper’s own browser. Sign in to the job sites you use, then close the window.');
+  const first = context.pages()[0] || (await context.newPage());
+  await first.goto('https://www.amazon.jobs/en/');
+  await (await context.newPage()).goto('https://apply.careers.microsoft.com/careers');
+  log('This is the helper’s own browser. Sign in to Amazon Jobs and Microsoft Careers (one tab each), then close the window.');
   await new Promise((resolve) => context.on('close', resolve));
   process.exit(0);
 }
