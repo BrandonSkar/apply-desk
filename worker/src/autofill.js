@@ -32,7 +32,27 @@ const stateNames = (s) => {
 };
 
 const yesNo = (v) => (/^\s*y/i.test(v || '') ? [YES, 'Yes'] : [NO, /^i (do not|don't|will not|won't)/i, 'No']);
-const eeo = (v) => (!v || /^decline/i.test(v) ? [DECLINE] : [v, DECLINE]);
+// Voluntary self-ID. Forms word the same answer many ways, so map the profile value to patterns.
+const declined = (v) => !v || /^decline/i.test(v.trim());
+const eeo = (v) => (declined(v) ? [DECLINE] : [v, DECLINE]);
+const gender = (v) => {
+  if (declined(v)) return [DECLINE];
+  if (/^(m|male|man)$/i.test(v.trim())) return [/^male$/i, /^man$/i, /^(cis(gender)? )?(male|man)\b/i, DECLINE];
+  if (/^(f|female|woman)$/i.test(v.trim())) return [/^female$/i, /^woman$/i, /^(cis(gender)? )?(female|woman)\b/i, DECLINE];
+  return [v, DECLINE];
+};
+const veteran = (v) => {
+  if (declined(v)) return [DECLINE];
+  if (/^(no|not)\b|not a (protected )?veteran/i.test(v.trim())) {
+    return [/^i am not a (protected )?veteran|^not a (protected )?veteran|^no\b/i, DECLINE];
+  }
+  return [v, DECLINE];
+};
+const disability = (v) => {
+  if (declined(v)) return [DECLINE];
+  if (/^(no|none)\b|no disability|do not have/i.test(v.trim())) return [/^no\b|do(n'?t| not) have a disability/i, DECLINE];
+  return [v, DECLINE];
+};
 const fullName = (p) => [p.first_name, p.last_name].filter(Boolean).join(' ');
 const inWA = (p) => /^(wa|washington)$/i.test((p.state || '').trim());
 
@@ -76,10 +96,10 @@ const AUTO_RULES = [
   [/zip|postal code/i, (p) => p.zip],
   [/street address|^address/i, (p) => p.address],
   [/sexual orientation|transgender|lgbt/i, () => [DECLINE], true],
-  [/gender|\bsex\b/i, (p) => eeo(p.gender), true],
+  [/gender|\bsex\b/i, (p) => gender(p.gender), true],
   [/race|ethnic|hispanic|latin/i, (p) => eeo(p.race), true],
-  [/veteran/i, (p) => eeo(p.veteran), true],
-  [/disabilit/i, (p) => eeo(p.disability), true],
+  [/veteran/i, (p) => veteran(p.veteran), true],
+  [/disabilit/i, (p) => disability(p.disability), true],
 ];
 
 const SUGGESTED_RULES = [

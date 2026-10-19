@@ -86,6 +86,39 @@ test('lever-style questions: radio years buckets and live-near-Seattle', () => {
   assert.equal(values.c4, 'No');
 });
 
+test('voluntary self-ID follows the profile, in the form\'s own wording', () => {
+  const sel = (name, label, labels) => ({ name, label, type: 'select', required: false, section: 'demographic', options: labels.map((l) => ({ label: l, value: l })) });
+  const form = {
+    questions: [
+      sel('g', 'Gender', ['Male', 'Female', 'Decline to self-identify']),
+      sel('gi', 'How do you identify? (gender identity)', ['Woman', 'Man', 'Non-binary', 'I prefer not to say']),
+      sel('v', 'Protected Veteran Status', [
+        'I identify as one or more of the classifications of a protected veteran',
+        'I identify as a veteran but not a protected veteran',
+        'I am not a protected veteran',
+        "I don't wish to answer",
+      ]),
+      sel('d', 'Disability Status', [
+        'Yes, I have a disability (or previously had a disability)',
+        'No, I do not have a disability and have not had one in the past',
+        'I do not want to answer',
+      ]),
+      sel('r', 'Race', ['Asian', 'White', 'Decline To Self Identify']),
+    ],
+  };
+  const p = { ...profile, gender: 'Male', veteran: 'Not a veteran', disability: 'No disability', race: 'Decline' };
+  const { values } = autofill(form, p);
+  assert.equal(values.g, 'Male');
+  assert.equal(values.gi, 'Man');
+  assert.equal(values.v, 'I am not a protected veteran');
+  assert.equal(values.d, 'No, I do not have a disability and have not had one in the past');
+  assert.equal(values.r, 'Decline To Self Identify');
+  // Declining everything still declines.
+  const none = autofill(form, profile).values;
+  assert.equal(none.g, 'Decline to self-identify');
+  assert.equal(none.v, "I don't wish to answer");
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');
