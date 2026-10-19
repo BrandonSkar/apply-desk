@@ -91,6 +91,12 @@ async function loadState() {
       ? waiting ? `Helper: ${waiting} to submit` : 'Helper running'
       : waiting ? `Helper offline · ${waiting} waiting` : 'Helper offline';
 
+    const codes = s.counts.needs_code;
+    $('#alert').hidden = !codes;
+    $('#alert-text').textContent = codes === 1
+      ? 'An application is waiting for the verification code the site emailed you.'
+      : `${codes} applications are waiting for verification codes the sites emailed you.`;
+
     $('#n-queue').textContent = s.counts.queue_auto || '';
     $('#n-manual').textContent = s.counts.queue_manual || '';
     $('#n-attn').textContent = s.counts.needs_you + s.counts.failed || '';
@@ -116,6 +122,10 @@ function showTab(name) {
 }
 
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+$('#alert-go').addEventListener('click', () => {
+  showTab('sent');
+  setTimeout(() => $('#tab-sent .codebox input')?.focus(), 400);
+});
 
 // ---------- queue ----------
 
@@ -457,8 +467,27 @@ async function renderSent() {
   panel.replaceChildren(...out);
 }
 
+function codeBox(job) {
+  const input = h('input', {
+    type: 'text', autocomplete: 'one-time-code', autocapitalize: 'off', spellcheck: 'false',
+    maxlength: 12, placeholder: 'Code', 'aria-label': `Verification code for ${job.company}`,
+  });
+  const send = async () => {
+    try {
+      await post(`/jobs/${encodeURIComponent(job.id)}/code`, { code: input.value.trim() });
+      toast('Code sent. The helper will enter it and submit.');
+      loadState();
+      renderSent();
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+  };
+  input.addEventListener('keydown', (e) => e.key === 'Enter' && send());
+  return h('div', { class: 'codebox' }, input, h('button', { class: 'btn btn-small btn-primary', onclick: send }, 'Send code'));
+}
+
 function sentRow(job) {
-  const [label, tone] = STATUS[job.status] || [job.status, ''];
+  const [label, tone] = job.needs === 'code' ? ['Needs your code', 'warn'] : STATUS[job.status] || [job.status, ''];
   const when = job.submitted_at || job.sent_at || job.updated_at;
   const acts = [];
   const act = (text, status, primary) =>
@@ -480,13 +509,14 @@ function sentRow(job) {
     h('div', { class: 'main' },
       h('a', { class: 'title', href: job.url, target: '_blank', rel: 'noopener noreferrer' }, job.title),
       h('div', { class: 'sub' }, [job.company, job.location, when && ago(when)].filter(Boolean).join(' · ')),
-      job.note && h('div', { class: 'rnote' }, job.note)),
+      job.note && h('div', { class: 'rnote' }, job.note),
+      job.needs === 'code' && codeBox(job)),
     h('div', { class: 'acts' }, h('span', { class: `chip ${tone}` }, label), acts));
 }
 
 // ---------- Profile ----------
 
-const YES_NO = new Set(['work_authorized', 'needs_sponsorship', 'willing_to_relocate']);
+const YES_NO = new Set(['work_authorized', 'needs_sponsorship', 'willing_to_relocate', 'sms_opt_in']);
 
 async function renderProfile() {
   const panel = $('#tab-profile');

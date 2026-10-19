@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   form TEXT,                      -- JSON: the normalized application questions (cached)
   answers TEXT,                   -- JSON: { fieldName: value }
   note TEXT,                      -- last message from the helper
+  needs TEXT,                     -- 'code' while the helper waits for an emailed verification code
+  code TEXT,                      -- a code you entered on the page, until the helper picks it up
   sent_at TEXT,                   -- when you pressed Send (or marked it applied); counts toward the daily goal
   updated_at TEXT,
   submitted_at TEXT

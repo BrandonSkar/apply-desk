@@ -137,6 +137,48 @@ test('voluntary self-ID follows the profile, in the form\'s own wording', () => 
   assert.equal(none.v, "I don't wish to answer");
 });
 
+test('pronouns: dropdowns pick the matching option, text boxes get the profile value', () => {
+  const p = { ...profile, pronouns: 'He/him/his' };
+  const form = {
+    questions: [
+      { name: 'a', label: 'Pronouns', type: 'select', required: true,
+        options: ['She/her/hers', 'He/him/his', 'They/them/theirs', 'I prefer not to say'].map((l) => ({ label: l, value: l })) },
+      { name: 'b', label: 'Pronouns', type: 'select', required: false,
+        options: ['she/her', 'he/him', 'they/them'].map((l) => ({ label: l, value: l })) },
+      { name: 'c', label: 'How should we refer to you (nickname and/or pronouns)?', type: 'text', required: false },
+      { name: 'd', label: 'Name Pronunciation', type: 'text', required: false },
+    ],
+  };
+  const { values, bucket } = autofill(form, p);
+  assert.equal(values.a, 'He/him/his');
+  assert.equal(values.b, 'he/him');
+  assert.equal(values.c, 'He/him/his');
+  assert.equal(values.d, undefined);
+  assert.equal(bucket.a, 'auto');
+  assert.equal(autofill(form, profile).bucket.a, 'open'); // no pronouns in the profile: still asks
+});
+
+test('SMS opt-ins are declined or left unchecked; other consent boxes still get acknowledged', () => {
+  const opts = (...l) => l.map((x) => ({ label: x, value: x }));
+  const form = {
+    questions: [
+      { name: 'a', label: 'Would you like to receive SMS updates about your application?', type: 'select', required: true, options: opts('Yes', 'No') },
+      { name: 'b', label: 'Text message consent', type: 'multiselect', required: false, options: opts('I agree to receive text messages from Acme about my application') },
+      { name: 'c', label: 'Opt in to text notifications', type: 'select', required: false, options: opts('Yes, text me', 'No, do not text me') },
+      { name: 'd', label: 'By checking this box, I acknowledge the privacy notice', type: 'multiselect', required: true, options: opts('Acknowledge') },
+      { name: 'e', label: 'Mobile phone number', type: 'text', required: true },
+    ],
+  };
+  const { values, bucket } = autofill(form, { ...profile, sms_opt_in: 'No' });
+  assert.equal(values.a, 'No');
+  assert.equal(values.b, undefined);
+  assert.equal(bucket.b, 'auto');
+  assert.equal(values.c, 'No, do not text me');
+  assert.deepEqual(values.d, ['Acknowledge']);
+  assert.equal(values.e, '555-0100');
+  assert.equal(autofill(form, { ...profile, sms_opt_in: 'Yes' }).values.a, 'Yes');
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');

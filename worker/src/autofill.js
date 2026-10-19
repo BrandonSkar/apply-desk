@@ -9,6 +9,10 @@ const DECLINE = /decline|don.?t wish|do not wish|prefer not|not to (answer|say|d
 const YES = /^\s*yes\b/i;
 const NO = /^\s*no\b/i;
 
+// Text-message opt-ins ("I agree to receive SMS updates"). Checked before the consent rule, which would tick them.
+export const SMS = /\bsms\b|text messag|\btexts?\b.{0,40}(updates|alerts|notifications|messages|reminders)|receive.{0,30}\btexts?\b|opt.?in.{0,30}(text|sms)|(text|sms).{0,30}opt.?in/i;
+export const wantsSms = (profile) => /^\s*y/i.test(profile?.sms_opt_in || '');
+
 // Fields that come from the profile; they're never stored in the answer bank.
 export const PROFILE_DRIVEN = new Set([
   'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'name', 'org', 'location', 'resume',
@@ -94,6 +98,7 @@ const AUTO_RULES = [
   [/github/i, (p) => p.github],
   [/^(personal )?(website|portfolio)|website url|portfolio (url|link)/i, (p) => p.website],
   [/preferred (first )?name/i, (p) => p.preferred_name || p.first_name],
+  [/pronoun/i, (p) => (p.pronouns ? [p.pronouns, new RegExp(`^${escapeRe(p.pronouns.split('/')[0].trim())}\\b`, 'i')] : null)],
   [/^(legal )?first name/i, (p) => p.first_name],
   [/^(legal )?last name|surname/i, (p) => p.last_name],
   [/^(legal )?full name$|^name$/i, (p) => fullName(p)],
@@ -253,6 +258,17 @@ export function autofill(form, profile, bank = new Map(), company = '') {
     if (BY_NAME[q.name]) {
       const v = fit(q, BY_NAME[q.name](profile));
       if (v) { set(v, 'auto'); continue; }
+    }
+
+    if (SMS.test(q.label)) {
+      const yes = wantsSms(profile);
+      const v = fit(q, yes
+        ? [YES, /agree|consent|opt.?in|i (would|do)\b/i, 'Yes']
+        : [NO, /do not|don.?t|opt.?out|decline|no thanks/i, 'No']);
+      if (v) set(v, 'auto');
+      // Opted out and the only choice is "I agree": leave it unchecked.
+      else bucket[q.name] = q.required ? 'open' : 'auto';
+      continue;
     }
 
     let done = false;

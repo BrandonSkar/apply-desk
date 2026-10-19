@@ -87,6 +87,20 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 main { max-width: 760px; margin: 0 auto; padding: 12px 16px 120px; }
 
+.alert {
+  max-width: 728px; margin: 12px auto 0; padding: 10px 14px; border-radius: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--warn-soft); color: var(--warn); font-size: 15px; font-weight: 600;
+}
+.alert[hidden] { display: none; }
+.alert span { flex: 1; min-width: 200px; }
+@media (max-width: 760px) { .alert { margin: 12px 16px 0; } }
+.codebox { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.codebox input {
+  width: 13ch; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 16px; letter-spacing: .08em;
+}
+
 /* ---------- cards & text ---------- */
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
 .card + .card { margin-top: 12px; }

@@ -142,6 +142,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  'enter_code',
+  {
+    title: 'Pass on a verification code',
+    description:
+      'Some sites email a verification code before an application goes through ("confirm you\'re a human"). ' +
+      'When the user reads that code and gives it to you, send it here; the helper types it in and submits. ' +
+      'Only use a code the user typed to you. Never look it up yourself.',
+    inputSchema: z.object({ job_id: z.string(), code: z.string() }),
+  },
+  async ({ job_id, code }) => {
+    try {
+      await api(`/jobs/${encodeURIComponent(job_id)}/code`, { method: 'POST', body: { code } });
+      return text('Code sent. The helper will enter it and submit.');
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
   'list_applications',
   {
     title: 'List applications',
@@ -153,7 +173,7 @@ server.registerTool(
       const { jobs } = await api(`/jobs?view=${view || 'sent'}`);
       if (!jobs.length) return text('Nothing here yet.');
       return text(jobs.slice(0, 60).map((j) =>
-        `- ${j.status.padEnd(14)} ${j.company} — ${j.title} (${j.location || 'n/a'})${j.note ? ` · ${j.note}` : ''} · job_id ${j.id}${view === 'manual' ? ` · apply: ${j.apply_url}` : ''}`,
+        `- ${(j.needs === 'code' ? 'needs_code' : j.status).padEnd(14)} ${j.company} — ${j.title} (${j.location || 'n/a'})${j.note ? ` · ${j.note}` : ''} · job_id ${j.id}${view === 'manual' ? ` · apply: ${j.apply_url}` : ''}`,
       ).join('\n'));
     } catch (err) {
       return fail(err);
@@ -179,7 +199,7 @@ server.registerTool(
         `Today: ${c.sent_today} of ${s.goal} sent.`,
         `Queue: ${c.queue_auto} ready to answer, ${c.queue_manual} Amazon/Microsoft to apply by hand.`,
         `Helper: ${seen < 120_000 ? 'running' : 'not running (start it with npm start in the runner folder)'}; ${c.ready} waiting to submit, ${c.submitting} submitting.`,
-        `Needs attention: ${c.needs_you} need the user, ${c.failed} failed. Submitted all time: ${c.submitted_total}.`,
+        `Needs attention: ${c.needs_you} need the user (${c.needs_code} waiting for an emailed code; ask the user for it, then use enter_code), ${c.failed} failed. Submitted all time: ${c.submitted_total}.`,
         s.profileReady ? '' : 'The profile is incomplete: fill it in on the /jobs page (Profile tab).',
       ].filter(Boolean).join('\n'));
     } catch (err) {

@@ -7,7 +7,9 @@ It also ships an **MCP server**, so you can work the same queue by chatting with
 - **Finds jobs** from public job-board APIs: Greenhouse and Lever company boards, Amazon Jobs, and Microsoft Careers. It filters by title, seniority, location (an area plus US remote) and posting age, and checks again every few minutes.
 - **Answers what it can.** Contact details, work authorization, sponsorship, location, voluntary self-ID and the usual "how did you hear about us" come from your profile. Answers you type are remembered for the next company that asks ("Why {company}?"), so each application asks less than the one before.
 - **Submits for you.** A Playwright helper opens the application in Chrome, fills it, attaches your resume, submits it, and saves a screenshot of the confirmation.
-- **Keeps you in the loop.** Nothing is sent until you press Send. If a site shows a CAPTCHA or asks for something unexpected, the helper stops and leaves the form open for you, and the page shows it under **Needs your attention**.
+- **Keeps you in the loop.** Nothing is sent until you press Send. If a site shows a CAPTCHA or asks for something unexpected, the helper leaves that form open for you and keeps working through the rest of the queue. The page shows it under **Needs your attention**.
+- **Verification codes stay with you.** Some sites email a code to confirm a person is applying. The page shows a banner and a code box. You read the code from your email and type it on the page (or give it to Claude), and the helper enters it. The helper never reads your email.
+- **No marketing texts.** Text-message (SMS) opt-ins are answered "No" or left unchecked unless you turn them on in your profile.
 
 ## How it fits together
 
@@ -54,7 +56,7 @@ You need Node 20+, Chrome, and a Cloudflare account with a domain.
 cd worker
 npm install
 npx wrangler d1 create apply-desk        # put the database_id in wrangler.jsonc
-npm run db:init                          # create the tables
+npm run db:init                          # create the tables (older databases: run the files in migrations/)
 # set your own domain in wrangler.jsonc "routes", then:
 npx wrangler secret put APP_PASSWORD     # the page password
 npx wrangler secret put SESSION_SECRET   # any long random string
@@ -92,7 +94,7 @@ Add this to Claude Desktop's `claude_desktop_config.json` (Settings → Develope
 
 Or in Claude Code: `claude mcp add apply-desk -- node /path/to/apply-desk/runner/src/mcp.js`
 
-Tools: `next_job`, `send_answers`, `skip_job`, `mark_applied`, `list_applications`, `status`, `refresh_jobs`.
+Tools: `next_job`, `send_answers`, `skip_job`, `mark_applied`, `enter_code`, `list_applications`, `status`, `refresh_jobs`.
 
 ## Tests
 

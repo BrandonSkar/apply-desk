@@ -28,6 +28,11 @@
   <button role="tab" id="t-settings" data-tab="settings" aria-controls="tab-settings">Settings</button>
 </nav>
 
+<div class="alert" id="alert" role="status" hidden>
+  <span id="alert-text"></span>
+  <button class="btn btn-small btn-primary" id="alert-go" type="button">Enter code</button>
+</div>
+
 <main>
   <section id="tab-queue" role="tabpanel" aria-labelledby="t-queue"></section>
   <section id="tab-manual" role="tabpanel" aria-labelledby="t-manual" hidden></section>

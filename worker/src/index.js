@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, EMPTY_PROFILE, PROFILE_FIELDS } from './defaults.js';
 import { buildTasks, runTask } from './sources.js';
 import { filterJobs } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
-import { autofill, bankKey, missingRequired, PROFILE_DRIVEN, toBank } from './autofill.js';
+import { autofill, bankKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 
 const AUTO_SOURCES = ['greenhouse', 'lever'];
@@ -72,15 +72,18 @@ async function api(request, env, path, url) {
   if (path === '/refresh' && method === 'POST') return json(await refreshSlice(env));
   if (path === '/runner/claim' && method === 'POST') return json(await claim(env, body));
   if (path === '/runner/result' && method === 'POST') return runnerResult(env, body);
+  if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || ''));
   if (path === '/runner/heartbeat' && method === 'POST') {
     await setKV(env, 'runner', { seen: now(), ...pickRunnerInfo(body) });
     return json({ ok: true });
   }
 
-  const m = /^\/jobs\/([^/]+)\/(answers|status)$/.exec(path);
+  const m = /^\/jobs\/([^/]+)\/(answers|status|code)$/.exec(path);
   if (m && method === 'POST') {
     const id = decodeURIComponent(m[1]);
-    return m[2] === 'answers' ? saveAnswers(env, id, body) : setStatus(env, id, body);
+    if (m[2] === 'answers') return saveAnswers(env, id, body);
+    if (m[2] === 'code') return giveCode(env, id, body);
+    return setStatus(env, id, body);
   }
   return json({ error: 'Unknown endpoint.' }, 404);
 }
@@ -96,6 +99,7 @@ async function state(env, since) {
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
+       SUM(needs = 'code') AS needs_code,
        SUM(status = 'failed') AS failed,
        SUM(status IN ('submitted','applied_manual')) AS submitted_total,
        SUM(sent_at >= ?2) AS sent_today
@@ -212,12 +216,15 @@ async function setStatus(env, id, body) {
   if (status === 'later') {
     stmt = env.DB.prepare('UPDATE jobs SET later = later + 1, updated_at = ? WHERE id = ?').bind(t, id);
   } else if (status === 'skipped' || status === 'new') {
-    stmt = env.DB.prepare('UPDATE jobs SET status = ?, sent_at = NULL, updated_at = ? WHERE id = ?').bind(status, t, id);
+    stmt = env.DB.prepare('UPDATE jobs SET status = ?, sent_at = NULL, note = NULL, needs = NULL, code = NULL, updated_at = ? WHERE id = ?')
+      .bind(status, t, id);
   } else if (status === 'applied_manual' || status === 'submitted') {
-    stmt = env.DB.prepare('UPDATE jobs SET status = ?, sent_at = COALESCE(sent_at, ?), submitted_at = ?, updated_at = ? WHERE id = ?')
-      .bind(status, t, t, t, id);
+    stmt = env.DB.prepare(
+      'UPDATE jobs SET status = ?, needs = NULL, code = NULL, sent_at = COALESCE(sent_at, ?), submitted_at = ?, updated_at = ? WHERE id = ?',
+    ).bind(status, t, t, t, id);
   } else if (status === 'ready') {
-    stmt = env.DB.prepare(`UPDATE jobs SET status = 'ready', note = NULL, updated_at = ? WHERE id = ? AND answers IS NOT NULL`).bind(t, id);
+    stmt = env.DB.prepare(`UPDATE jobs SET status = 'ready', note = NULL, needs = NULL, code = NULL, updated_at = ? WHERE id = ? AND answers IS NOT NULL`)
+      .bind(t, id);
   } else {
     return json({ error: 'Unknown status.' }, 400);
   }
@@ -238,10 +245,13 @@ async function claim(env, body) {
   if (!job) return { job: null };
   const r = await env.DB.prepare(`UPDATE jobs SET status = 'submitting', updated_at = ? WHERE id = ? AND status = 'ready'`).bind(t, job.id).run();
   if (!r.meta.changes) return { job: null };
+  const profile = await getProfile(env);
   return {
     job: { ...publicJob(job), apply_url: job.apply_url, board: job.board },
     form: JSON.parse(job.form),
     answers: JSON.parse(job.answers),
+    // Preferences the helper applies to parts of a form that aren't in the question list.
+    prefs: { smsOptIn: wantsSms(profile), email: profile.email },
   };
 }
 
@@ -250,10 +260,31 @@ async function runnerResult(env, body) {
   if (!allowed.includes(body.status)) return json({ error: 'Unknown status.' }, 400);
   const t = now();
   const note = body.note ? String(body.note).slice(0, 1000) : null;
-  await env.DB.prepare('UPDATE jobs SET status = ?, note = ?, updated_at = ?, submitted_at = CASE WHEN ? THEN ? ELSE submitted_at END WHERE id = ?')
-    .bind(body.status, note, t, body.status === 'submitted' ? 1 : 0, t, String(body.id)).run();
+  const needs = body.needs === 'code' ? 'code' : null;
+  // Only jobs the helper is working on: a late report never undoes what you did on the page
+  // ("I finished it", Skip, Retry).
+  await env.DB.prepare(
+    `UPDATE jobs SET status = ?, note = ?, needs = ?, code = NULL, updated_at = ?,
+       submitted_at = CASE WHEN ? THEN ? ELSE submitted_at END
+     WHERE id = ? AND status IN ('submitting', 'needs_you')`,
+  ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
   return json({ ok: true });
+}
+
+// You read the emailed code and enter it on the page (or give it to Claude); the helper picks it up.
+async function giveCode(env, id, body) {
+  const code = String(body.code || '').replace(/[\s-]/g, '');
+  if (!/^[A-Za-z0-9]{4,12}$/.test(code)) return json({ error: 'That doesn’t look like a code (4–12 letters or numbers).' }, 400);
+  const r = await env.DB.prepare(`UPDATE jobs SET code = ?, updated_at = ? WHERE id = ? AND needs = 'code'`).bind(code, now(), id).run();
+  return r.meta.changes ? json({ ok: true }) : json({ error: 'That application isn’t waiting for a code.' }, 409);
+}
+
+async function takeCode(env, id) {
+  const row = await env.DB.prepare(`SELECT code FROM jobs WHERE id = ? AND needs = 'code' AND code IS NOT NULL`).bind(id).first();
+  if (!row) return { code: null };
+  await env.DB.prepare('UPDATE jobs SET code = NULL WHERE id = ?').bind(id).run();
+  return { code: row.code };
 }
 
 const pickRunnerInfo = (b) => ({ version: String(b.version || '').slice(0, 20), host: String(b.host || '').slice(0, 60) });
@@ -370,7 +401,7 @@ async function saveSettings(env, body) {
 function publicJob(j) {
   return {
     id: j.id, source: j.source, company: j.company, title: j.title, location: j.location, remote: !!j.remote,
-    url: j.url, apply_url: j.apply_url, posted_at: j.posted_at, status: j.status, note: j.note,
+    url: j.url, apply_url: j.apply_url, posted_at: j.posted_at, status: j.status, note: j.note, needs: j.needs,
     sent_at: j.sent_at, submitted_at: j.submitted_at, updated_at: j.updated_at,
   };
 }
