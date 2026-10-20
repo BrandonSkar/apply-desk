@@ -41,6 +41,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Hidden means hidden, even for elements whose class sets a display (e.g. .btn). */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
