@@ -17,7 +17,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 const FILLERS = { greenhouse, lever, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -190,6 +190,14 @@ async function handle({ job, form, answers, prefs = {} }) {
     await report(job.id, 'needs_you', note);
     return wait(page, job, filler);
   } catch (err) {
+    if (err instanceof amazon.LimitError) {
+      // At Amazon's cap: put the job back (your answers are kept) and pause Amazon until a spot opens.
+      log(`  ${err.message}`);
+      await report(job.id, 'new', err.message);
+      await api('/runner/site', { method: 'POST', body: { source: job.source, paused: true, note: err.message } }).catch(() => {});
+      await page.close().catch(() => {});
+      return;
+    }
     log('  Error:', err.message.split('\n')[0]);
     await screenshot(page, job, 'error');
     await report(job.id, 'failed', err.message.split('\n')[0].slice(0, 300));
@@ -211,9 +219,10 @@ async function prepareNext() {
   const page = await context.newPage();
   try {
     const r = await FILLERS[job.source].prepare(page, job);
-    const body = r.form ? { id: job.id, form: r.form, alert: null } : { id: job.id, outcome: r.outcome };
+    const body = r.form ? { id: job.id, form: r.form, alert: null } : { id: job.id, outcome: r.outcome, note: r.outcome === 'limit' ? amazon.LIMIT_NOTE : undefined };
     await api('/runner/form', { method: 'POST', body });
-    log(r.form ? `  Ready on your page (${r.form.questions.length} questions).` : `  ${r.outcome === 'applied' ? 'Already applied.' : 'Posting closed.'}`);
+    const said = { applied: 'Already applied.', closed: 'Posting closed.', limit: `${amazon.LIMIT_NOTE} Checking again in a few hours.` };
+    log(r.form ? `  Ready on your page (${r.form.questions.length} questions).` : `  ${said[r.outcome] || r.outcome}`);
   } catch (err) {
     // Signed out: the server shows a banner; the job is parked (pushed back) so the next try picks another.
     log('  Couldn’t read it:', err.message.split('\n')[0]);

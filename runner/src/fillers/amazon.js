@@ -9,6 +9,9 @@ import { isEmpty, sleep, visibleTexts, waitOutcome } from './common.js';
 const SECTIONS = ['Job-specific questions', 'Work Eligibility'];
 
 export class SignedOutError extends Error {}
+// Amazon allows 10 active applications; past that, every application shows a "maximum number" page.
+export class LimitError extends Error {}
+export const LIMIT_NOTE = 'You’re at Amazon’s limit of 10 active applications. Amazon jobs are paused until a spot opens.';
 
 async function open(page, job) {
   await page.goto(job.apply_url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -16,10 +19,11 @@ async function open(page, job) {
   if (/passport\.amazon\.jobs|\/(signin|login)\b/i.test(page.url())) {
     throw new SignedOutError('Signed out of Amazon Jobs. In the runner folder, stop the helper, run npm run login, and sign in again.');
   }
-  // The application has a "My progress" sidebar; without it, the job is closed or already applied to.
+  // The application has a "My progress" sidebar; without it, the job is closed, already applied to, or you're at the limit.
   const sidebar = page.locator('a.nav-link', { hasText: /^Job-specific questions$|^Work Eligibility$|^Contact information$/i }).first();
   if (await sidebar.waitFor({ timeout: 20_000 }).then(() => true, () => false)) return 'form';
   const text = await page.locator('body').innerText().catch(() => '');
+  if (/maximum number of job applications|limit of \d+ job applications/i.test(text)) return 'limit';
   if (/already applied|you have applied|application (was|has been) (submitted|received)/i.test(text)) return 'applied';
   if (/no longer (available|accepting)|job (is )?closed|not found|page you requested/i.test(text)) return 'closed';
   throw new Error('The Amazon application page didn’t load as expected.');
@@ -94,6 +98,7 @@ async function saveStep(page, section, missing) {
 
 export async function fill(page, { job, form, answers }) {
   const state = await open(page, job);
+  if (state === 'limit') throw new LimitError(LIMIT_NOTE);
   if (state === 'applied') return { missing: [], done: true };
   if (state === 'closed') throw new Error('This Amazon posting is closed.');
   const missing = [];

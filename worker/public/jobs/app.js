@@ -93,9 +93,12 @@ async function loadState() {
 
     // A code someone's waiting on comes first; otherwise any notice from the helper (e.g. signed out of Amazon).
     const codes = s.counts.needs_code;
+    // A paused site (Amazon's 10-application limit): its jobs are held back until a spot opens.
+    const pausedNotes = Object.entries(s.paused || {}).map(([site, p]) =>
+      `${p.note} The helper checks again once a day${site === 'amazon' ? '; to free a spot sooner, withdraw an old application on Amazon’s Application Dashboard' : ''}.`);
     const text = codes === 1
       ? 'An application is waiting for the verification code the site emailed you.'
-      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : s.alert?.text || '';
+      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : [s.alert?.text, ...pausedNotes].filter(Boolean).join(' ');
     $('#alert').hidden = !text;
     $('#alert-text').textContent = text;
     $('#alert-go').hidden = !codes;

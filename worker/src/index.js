@@ -9,8 +9,19 @@ import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } fro
 const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon', 'microsoft'];
 // Greenhouse and Lever forms come from public APIs. Amazon's and Microsoft's need your login, so the helper
 // reads them ("prepares" the job) and the job joins the auto queue once its form is in.
-const AUTO_WHERE = `(source IN ('greenhouse','lever') OR (source IN ('amazon','microsoft') AND form IS NOT NULL))`;
-const MANUAL_WHERE = `(source IN ('amazon','microsoft') AND form IS NULL)`;
+const SIGNED_IN_SOURCES = ['amazon', 'microsoft'];
+// A site can be paused (Amazon's limit of 10 active applications); its jobs stay out of the queue meanwhile.
+const autoWhere = (paused = {}) => {
+  const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
+  const signedIn = open.length ? ` OR (source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NOT NULL)` : '';
+  return `(source IN ('greenhouse','lever')${signedIn})`;
+};
+const manualWhere = (paused = {}) => {
+  const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
+  return open.length ? `(source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NULL)` : '(0)';
+};
+// While paused, the helper tries one job from that site this often to see if a spot has opened.
+const PAUSE_RECHECK_MS = 24 * 60 * 60 * 1000;
 // How many prepared-but-unanswered jobs to keep ready per site. Opening an Amazon application leaves it in progress there.
 const PREPARE_BUFFER = 5;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
@@ -80,6 +91,10 @@ async function api(request, env, path, url) {
   if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || ''));
   if (path === '/runner/prepare' && method === 'POST') return json(await claimPrepare(env));
   if (path === '/runner/form' && method === 'POST') return saveRunnerForm(env, body);
+  if (path === '/runner/site' && method === 'POST') {
+    await setPaused(env, String(body.source || ''), body.paused === true, body.note);
+    return json({ ok: true, paused: await getKV(env, 'paused', {}) });
+  }
   if (path === '/runner/heartbeat' && method === 'POST') {
     await setKV(env, 'runner', { seen: now(), ...pickRunnerInfo(body) });
     return json({ ok: true });
@@ -99,10 +114,11 @@ async function state(env, since) {
   const start = validISO(since) || new Date(Date.now() - 864e5).toISOString();
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
+  const paused = await getKV(env, 'paused', {});
   const row = await env.DB.prepare(
     `SELECT
-       SUM(status = 'new' AND ${AUTO_WHERE} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_auto,
-       SUM(status = 'new' AND ${MANUAL_WHERE} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_manual,
+       SUM(status = 'new' AND ${autoWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_auto,
+       SUM(status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_manual,
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
@@ -120,6 +136,7 @@ async function state(env, since) {
     runner: await getKV(env, 'runner', null),
     refresh: await getKV(env, 'refresh', null),
     alert: await getKV(env, 'alert', null),
+    paused,
     profileReady: !!(profile.first_name && profile.last_name && profile.email && profile.phone),
   };
 }
@@ -127,8 +144,9 @@ async function state(env, since) {
 async function next(env, lane) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
+  const paused = await getKV(env, 'paused', {});
   const pick = env.DB.prepare(
-    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? MANUAL_WHERE : AUTO_WHERE}
+    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}
        AND (posted_at IS NULL OR posted_at >= ?1)
      ORDER BY later ASC, posted_at DESC LIMIT 1`,
   ).bind(fresh);
@@ -164,8 +182,9 @@ async function list(env, view) {
   if (view === 'manual') {
     const settings = await getSettings(env);
     const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
+    const paused = await getKV(env, 'paused', {});
     const { results } = await env.DB.prepare(
-      `SELECT * FROM jobs WHERE status = 'new' AND ${MANUAL_WHERE} AND (posted_at IS NULL OR posted_at >= ?)
+      `SELECT * FROM jobs WHERE status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?)
        ORDER BY posted_at DESC LIMIT 150`,
     ).bind(fresh).all();
     return { jobs: results.map(publicJob) };
@@ -272,7 +291,8 @@ async function claim(env, body) {
 }
 
 async function runnerResult(env, body) {
-  const allowed = ['submitted', 'needs_you', 'failed', 'ready'];
+  // 'new' puts a job back in the queue (e.g. the site was at its application limit); your answers are kept.
+  const allowed = ['submitted', 'needs_you', 'failed', 'ready', 'new'];
   if (!allowed.includes(body.status)) return json({ error: 'Unknown status.' }, 400);
   const t = now();
   const note = body.note ? String(body.note).slice(0, 1000) : null;
@@ -281,9 +301,10 @@ async function runnerResult(env, body) {
   // ("I finished it", Skip, Retry).
   await env.DB.prepare(
     `UPDATE jobs SET status = ?, note = ?, needs = ?, code = NULL, updated_at = ?,
-       submitted_at = CASE WHEN ? THEN ? ELSE submitted_at END
+       submitted_at = CASE WHEN ? THEN ? ELSE submitted_at END,
+       sent_at = CASE WHEN ? THEN NULL ELSE sent_at END
      WHERE id = ? AND status IN ('submitting', 'needs_you')`,
-  ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, String(body.id)).run();
+  ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, body.status === 'new' ? 1 : 0, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
   return json({ ok: true });
 }
@@ -297,7 +318,10 @@ async function claimPrepare(env) {
        AND (posted_at IS NULL OR posted_at >= ?) GROUP BY source`,
   ).bind(fresh).all();
   const full = new Set(counts.filter((c) => c.n >= PREPARE_BUFFER).map((c) => c.source));
-  const sources = ['amazon', 'microsoft'].filter((s) => !full.has(s));
+  // A paused site gets one try a day, to notice when a spot has opened.
+  const paused = await getKV(env, 'paused', {});
+  const recheckDue = (s) => Date.now() - Date.parse(paused[s].checkedAt || paused[s].since) >= PAUSE_RECHECK_MS;
+  const sources = SIGNED_IN_SOURCES.filter((s) => !full.has(s) && (!paused[s] || recheckDue(s)));
   if (!sources.length) return { job: null };
   const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const job = await env.DB.prepare(
@@ -320,6 +344,13 @@ async function saveRunnerForm(env, body) {
   } else if (body.form && Array.isArray(body.form.questions)) {
     await env.DB.prepare(`UPDATE jobs SET form = ?, needs = NULL, note = NULL, updated_at = ? WHERE id = ? AND status = 'new'`)
       .bind(JSON.stringify(body.form).slice(0, 200_000), t, id).run();
+    // The site let us in, so it isn't at its limit any more.
+    const job = await env.DB.prepare('SELECT source FROM jobs WHERE id = ?').bind(id).first();
+    if (job) await setPaused(env, job.source, false);
+  } else if (body.outcome === 'limit') {
+    const job = await env.DB.prepare('SELECT source FROM jobs WHERE id = ?').bind(id).first();
+    await env.DB.prepare(`UPDATE jobs SET needs = NULL, updated_at = ? WHERE id = ?`).bind(t, id).run();
+    if (job) await setPaused(env, job.source, true, body.note);
   } else if (body.outcome === 'applied') {
     await env.DB.prepare(`UPDATE jobs SET status = 'applied_manual', needs = NULL, note = 'Already applied on the site', sent_at = COALESCE(sent_at, ?), submitted_at = ?, updated_at = ? WHERE id = ?`)
       .bind(t, t, t, id).run();
@@ -332,6 +363,21 @@ async function saveRunnerForm(env, body) {
   }
   if (body.alert !== undefined) await setKV(env, 'alert', body.alert ? { text: String(body.alert).slice(0, 300), at: t } : null);
   return json({ ok: true });
+}
+
+// Pause or resume a site (e.g. Amazon's 10-application limit). Pausing again just records the latest check.
+async function setPaused(env, source, on, note) {
+  if (!SIGNED_IN_SOURCES.includes(source)) return;
+  const paused = await getKV(env, 'paused', {});
+  if (on) {
+    const t = now();
+    paused[source] = { since: paused[source]?.since || t, checkedAt: t, note: String(note || paused[source]?.note || 'Paused').slice(0, 300) };
+  } else if (paused[source]) {
+    delete paused[source];
+  } else {
+    return;
+  }
+  await setKV(env, 'paused', paused);
 }
 
 // You read the emailed code and enter it on the page (or give it to Claude); the helper picks it up.
