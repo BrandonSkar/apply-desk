@@ -176,7 +176,7 @@ function jobCard({ job, form, fill }) {
   if (groups.suggested.length) {
     formEl.append(h('div', { class: 'qsection' },
       h('h3', {}, 'Check these'),
-      h('p', { class: 'muted' }, 'Filled from your past answers and profile.'),
+      h('p', { class: 'muted' }, 'Best guesses for questions you haven’t answered before. Already filled in, so only change what’s wrong.'),
       groups.suggested.map((q) => field(q, fill.values[q.name]))));
   }
   if (groups.optional.length) {
@@ -186,7 +186,7 @@ function jobCard({ job, form, fill }) {
   }
   if (groups.auto.length) {
     formEl.append(h('details', { class: 'qgroup' },
-      h('summary', {}, `Filled from your profile (${groups.auto.length})`),
+      h('summary', {}, `Already answered: your profile and past answers (${groups.auto.length})`),
       groups.auto.map((q) => field(q, fill.values[q.name]))));
   }
 

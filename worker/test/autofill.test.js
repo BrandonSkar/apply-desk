@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autofill, bankKey, fromBank, missingRequired, pickOption, pickYears, toBank } from '../src/autofill.js';
+import { autofill, bankKey, fromBank, looseKey, missingRequired, pickOption, pickYears, toBank } from '../src/autofill.js';
 import { EMPTY_PROFILE } from '../src/defaults.js';
 
 const profile = {
@@ -61,6 +61,29 @@ test('uses past answers, swapping the company name', () => {
   assert.equal(bucket.x, 'suggested');
   assert.equal(fromBank(stored, 'Twilio'), 'I like what Twilio builds.');
   assert.ok(bank.size === 1);
+});
+
+test('past answers to choice questions are reused without asking; looser wording still matches', () => {
+  const yn = [{ label: 'Yes', value: '1' }, { label: 'No', value: '0' }];
+  const bank = new Map([
+    [bankKey('Have you worked at DoorDash?', 'DoorDash', 'select'), toBank('No', 'DoorDash')],
+    [bankKey('Applicant Privacy Acknowledgement', 'Acme', 'select'), 'Yes'],
+  ]);
+  bank.loose = new Map([...bank].map(([k, v]) => [looseKey(k), v]));
+  const form = {
+    questions: [
+      { name: 'a', label: 'Have you worked at Stripe?', type: 'select', required: true, options: yn },
+      { name: 'b', label: 'Applicant Privacy Acknowledgement', type: 'select', required: true, options: yn },
+      { name: 'c', label: 'Have you ever worked at the Stripe?', type: 'select', required: true, options: yn },
+    ],
+  };
+  const { values, bucket } = autofill(form, profile, bank, 'Stripe');
+  assert.equal(values.a, 'No');
+  assert.equal(bucket.a, 'auto');
+  assert.equal(values.b, 'Yes');
+  assert.equal(bucket.b, 'auto');
+  assert.equal(values.c, 'No'); // via the looser key
+  assert.equal(bucket.c, 'auto');
 });
 
 test('lever-style questions: radio years buckets and live-near-Seattle', () => {

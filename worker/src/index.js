@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, EMPTY_PROFILE, PROFILE_FIELDS } from './defaults.js';
 import { buildTasks, runTask } from './sources.js';
 import { filterJobs } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
-import { autofill, bankKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
+import { autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 
 const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon', 'microsoft'];
@@ -422,8 +422,11 @@ async function getProfile(env) {
 }
 
 async function getBank(env) {
-  const { results } = await env.DB.prepare('SELECT qkey, answer FROM answer_bank').all();
-  return new Map(results.map((r) => [r.qkey, JSON.parse(r.answer)]));
+  const { results } = await env.DB.prepare('SELECT qkey, answer FROM answer_bank ORDER BY updated_at').all();
+  const bank = new Map(results.map((r) => [r.qkey, JSON.parse(r.answer)]));
+  // Second index on the looser key; later (newer) answers win.
+  bank.loose = new Map(results.map((r) => [looseKey(r.qkey), JSON.parse(r.answer)]));
+  return bank;
 }
 
 async function saveProfile(env, body) {

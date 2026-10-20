@@ -252,6 +252,14 @@ export function bankKey(label, company, type) {
   return `${s.toLowerCase().replace(/[^a-z0-9{} ]+/g, ' ').replace(/\s+/g, ' ').trim()}|${type}`;
 }
 
+// A looser key that ignores filler words, so "Do you have ..." and "Have you got the ..." variants still match.
+// ("currently" is kept: "currently employed by X" and "have you been employed by X" are different questions.)
+const FILLER = new Set('a an the and or of to in on for at by with your you do does did are is was were be been have has had any this that these those please our we us ever'.split(' '));
+export function looseKey(qkey) {
+  const i = qkey.lastIndexOf('|');
+  return `${qkey.slice(0, i).split(' ').filter((w) => !FILLER.has(w)).join(' ')}${qkey.slice(i)}`;
+}
+
 export function toBank(value, company) {
   if (!company) return value;
   const re = new RegExp(escapeRe(company), 'gi');
@@ -323,10 +331,14 @@ export function autofill(form, profile, bank = new Map(), company = '') {
     }
     if (done) continue;
 
-    const banked = bank.get(bankKey(q.label, company, q.type));
+    // You've answered this before: reuse it without asking again. Long written answers ("Why {company}?")
+    // still show, since they usually need a tweak for the new job.
+    const key = bankKey(q.label, company, q.type);
+    const banked = bank.has(key) ? bank.get(key) : bank.loose?.get(looseKey(key));
     if (banked !== undefined) {
       const v = fitBanked(q, fromBank(banked, company));
-      if (v) { set(v, 'suggested'); continue; }
+      const essay = q.type === 'textarea' || (q.type === 'text' && v.length > 80);
+      if (v) { set(v, essay ? 'suggested' : 'auto'); continue; }
     }
 
     // Already answered on the site itself (Amazon remembers your answers from earlier applications).
