@@ -19,7 +19,7 @@ const server = new McpServer(
       'Mention the prefilled answers briefly so the user can correct them; only send the ones they change.',
       'Never invent facts about the user (experience, salary, eligibility). For essay questions you may draft an answer from the',
       'job description and what the user has said, but show it and get approval before sending.',
-      'Amazon and Microsoft jobs (lane "manual") need the user to apply on the site; use mark_applied after they do.',
+      'Amazon and Microsoft jobs join the normal queue once the helper (which uses the user\'s sign-in) has read their questions.',
     ].join(' '),
   },
 );
@@ -71,7 +71,8 @@ server.registerTool(
     title: 'Next job in the queue',
     description:
       'Get the next job to apply to, with the questions the user still needs to answer, the prefilled answers, and the start of the job description. ' +
-      'lane "auto" (default) is Greenhouse/Lever jobs the helper can submit; lane "manual" is Amazon/Microsoft jobs the user applies to on the site.',
+      'lane "auto" (default) is every job the helper can submit (Greenhouse, Lever, and Amazon/Microsoft once the helper has read their questions); ' +
+      'lane "manual" is Amazon/Microsoft jobs the helper hasn\'t read yet.',
     inputSchema: z.object({ lane: z.enum(['auto', 'manual']).optional() }),
   },
   async ({ lane }) => {
@@ -197,7 +198,7 @@ server.registerTool(
       const seen = s.runner?.seen ? Date.now() - Date.parse(s.runner.seen) : Infinity;
       return text([
         `Today: ${c.sent_today} of ${s.goal} sent.`,
-        `Queue: ${c.queue_auto} ready to answer, ${c.queue_manual} Amazon/Microsoft to apply by hand.`,
+        `Queue: ${c.queue_auto} ready to answer, ${c.queue_manual} Amazon/Microsoft lined up for the helper to read.`,
         `Helper: ${seen < 120_000 ? 'running' : 'not running (start it with npm start in the runner folder)'}; ${c.ready} waiting to submit, ${c.submitting} submitting.`,
         `Needs attention: ${c.needs_you} need the user (${c.needs_code} waiting for an emailed code; ask the user for it, then use enter_code), ${c.failed} failed. Submitted all time: ${c.submitted_total}.`,
         s.profileReady ? '' : 'The profile is incomplete: fill it in on the /jobs page (Profile tab).',

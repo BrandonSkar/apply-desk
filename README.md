@@ -6,7 +6,7 @@ It also ships an **MCP server**, so you can work the same queue by chatting with
 
 - **Finds jobs** from public job-board APIs: Greenhouse and Lever company boards, Amazon Jobs, and Microsoft Careers. It filters by title, seniority, location (an area plus US remote) and posting age, and checks again every few minutes.
 - **Answers what it can.** Contact details, work authorization, sponsorship, location, voluntary self-ID and the usual "how did you hear about us" come from your profile, along with Greenhouse's built-in Employment and Education sections, which aren't in its public question list. Answers you type are remembered for the next company that asks ("Why {company}?"), so each application asks less than the one before.
-- **Submits for you.** A Playwright helper opens the application in Chrome, fills it, attaches your resume, submits it, and saves a screenshot of the confirmation.
+- **Submits for you.** A Playwright helper opens the application in Chrome, fills it, attaches your resume, submits it, and saves a screenshot of the confirmation. For Amazon and Microsoft, which need a sign-in, the helper uses its own browser where you've signed in once, and reads each job's questions ahead of time so they show on your page like any other.
 - **Keeps you in the loop.** Nothing is sent until you press Send. If a site shows a CAPTCHA or asks for something unexpected, the helper leaves that form open for you and keeps working through the rest of the queue. The page shows it under **Needs your attention**.
 - **Verification codes stay with you.** Some sites email a code to confirm a person is applying. The page shows a banner and a code box. You read the code from your email and type it on the page (or give it to Claude), and the helper enters it. The helper never reads your email.
 - **No marketing texts.** Text-message (SMS) opt-ins are answered "No" or left unchecked unless you turn them on in your profile.
@@ -108,11 +108,10 @@ Unit tests cover the title and location filters and the autofill rules, using qu
 
 - **Free-plan friendly.** Each scheduled run handles three sources, which keeps it well inside the Workers free plan's CPU limit. The cursor advances before the work, so a source that fails can't block the others.
 - **Security.** The page sits behind a password with an HMAC-signed, HttpOnly cookie. The helper and MCP server use a separate bearer token. API writes must be JSON, which blocks cross-site form posts. The page has a strict Content-Security-Policy, and everything that comes from job sites is inserted as text, never as HTML.
-- **Responsible use.** Applications go out only after you review and send them. CAPTCHAs are never bypassed. Job data comes from public APIs; login-only sites (Amazon, Microsoft) are listed for you to apply to directly.
+- **Responsible use.** Applications go out only after you review and send them. CAPTCHAs and emailed verification codes are never bypassed. Job listings come from public APIs; Amazon and Microsoft applications use your own signed-in session, one at a time.
 
 ## Roadmap
 
-- Fillers for Amazon and Microsoft applications (they need a signed-in session in the helper's browser)
 - Ashby job boards
 - Drafting answers to essay questions from the job description, for you to edit
 

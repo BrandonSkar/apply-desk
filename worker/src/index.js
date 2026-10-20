@@ -12,7 +12,7 @@ const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon', 'microsoft'];
 const AUTO_WHERE = `(source IN ('greenhouse','lever') OR (source IN ('amazon','microsoft') AND form IS NOT NULL))`;
 const MANUAL_WHERE = `(source IN ('amazon','microsoft') AND form IS NULL)`;
 // How many prepared-but-unanswered jobs to keep ready per site. Opening an Amazon application leaves it in progress there.
-const PREPARE_BUFFER = 3;
+const PREPARE_BUFFER = 5;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
 // Small batches keep each run well inside the free plan's CPU limit; the cron works through the rest.
 const TASKS_PER_RUN = 3;

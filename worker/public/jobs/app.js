@@ -101,7 +101,6 @@ async function loadState() {
     $('#alert-go').hidden = !codes;
 
     $('#n-queue').textContent = s.counts.queue_auto || '';
-    $('#n-manual').textContent = s.counts.queue_manual || '';
     $('#n-attn').textContent = s.counts.needs_you + s.counts.failed || '';
     return s;
   } catch (err) {
@@ -112,7 +111,7 @@ async function loadState() {
 
 // ---------- tabs ----------
 
-const TABS = { queue: renderQueue, manual: renderManual, sent: renderSent, profile: renderProfile, settings: renderSettings };
+const TABS = { queue: renderQueue, sent: renderSent, profile: renderProfile, settings: renderSettings };
 let activeTab = 'queue';
 
 function showTab(name) {
@@ -355,11 +354,16 @@ function emptyQueue(note) {
     loadState();
     renderQueue();
   } }, 'Check every company now');
+  // Amazon and Microsoft jobs reach the queue once the helper has read their questions (a few at a time).
+  const lined = lastState?.counts.queue_manual || 0;
+  const helperOn = lastState?.runner?.seen && Date.now() - Date.parse(lastState.runner.seen) < 2 * 60 * 1000;
+  const sites = lined > 0 && h('p', { class: 'small muted' }, helperOn
+    ? `${lined} Amazon and Microsoft job${lined === 1 ? ' is' : 's are'} lined up. The helper reads a few at a time, so more show up here every couple of minutes.`
+    : `${lined} Amazon and Microsoft job${lined === 1 ? ' is' : 's are'} waiting. Start the helper on your PC to bring them in.`);
   return h('div', { class: 'card center' },
     h('h2', {}, 'You’re caught up'),
     note && h('p', { class: 'muted' }, note),
-    status, btn, progress,
-    h('p', { class: 'small muted' }, 'Amazon and Microsoft jobs are in their own tab.'));
+    status, sites, btn, progress);
 }
 
 async function runRefresh(onProgress = () => {}) {
@@ -389,50 +393,6 @@ async function runRefresh(onProgress = () => {}) {
 function errorCard(err) {
   return h('div', { class: 'card' }, h('p', {}, 'Something went wrong: ', err.message),
     h('button', { class: 'btn', onclick: () => TABS[activeTab]() }, 'Try again'));
-}
-
-// ---------- Amazon & Microsoft ----------
-
-async function renderManual() {
-  const panel = $('#tab-manual');
-  panel.replaceChildren(h('div', { class: 'loading' }, 'Loading…'));
-  let data;
-  try {
-    data = await api('/jobs?view=manual');
-  } catch (err) {
-    panel.replaceChildren(errorCard(err));
-    return;
-  }
-  const intro = h('p', { class: 'intro' },
-    'Amazon and Microsoft need you signed in, so these open on their sites for now. Press “I applied” after you submit so it’s tracked and counts toward today.');
-  if (!data.jobs.length) {
-    panel.replaceChildren(intro, h('div', { class: 'card center muted' }, 'No new Amazon or Microsoft jobs match right now.'));
-    return;
-  }
-  const list = h('div', { class: 'list' });
-  for (const job of data.jobs) {
-    const row = h('div', { class: 'row' },
-      h('div', { class: 'main' },
-        h('a', { class: 'title', href: job.url, target: '_blank', rel: 'noopener noreferrer' }, job.title),
-        h('div', { class: 'sub' }, [job.company, job.location, job.remote && 'Remote', job.posted_at && `posted ${ago(job.posted_at)}`].filter(Boolean).join(' · '))),
-      h('div', { class: 'acts' },
-        h('a', { class: 'btn btn-small', href: job.apply_url, target: '_blank', rel: 'noopener noreferrer' }, 'Apply ↗'),
-        h('button', { class: 'btn btn-small btn-primary', onclick: () => manualMark(job, 'applied_manual', row) }, 'I applied'),
-        h('button', { class: 'btn btn-small', onclick: () => manualMark(job, 'skipped', row) }, 'Skip')));
-    list.append(row);
-  }
-  panel.replaceChildren(intro, list);
-}
-
-async function manualMark(job, status, row) {
-  try {
-    await post(`/jobs/${encodeURIComponent(job.id)}/status`, { status });
-    row.remove();
-    toast(status === 'skipped' ? 'Skipped' : `Marked applied: ${job.company} · ${job.title}`);
-    loadState();
-  } catch (err) {
-    toast(err.message, 'bad');
-  }
 }
 
 // ---------- Sent ----------
