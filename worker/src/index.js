@@ -6,8 +6,13 @@ import { loadForm, JobClosedError } from './forms.js';
 import { autofill, bankKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 
-const AUTO_SOURCES = ['greenhouse', 'lever'];
-const MANUAL_SOURCES = ['amazon', 'microsoft'];
+const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon'];
+// Greenhouse and Lever forms come from public APIs. Amazon's need your login, so the helper reads them
+// ("prepares" the job) and the job joins the auto queue once its form is in.
+const AUTO_WHERE = `(source IN ('greenhouse','lever') OR (source = 'amazon' AND form IS NOT NULL))`;
+const MANUAL_WHERE = `(source = 'microsoft' OR (source = 'amazon' AND form IS NULL))`;
+// How many prepared-but-unanswered Amazon jobs to keep ready. Each one leaves an in-progress application on Amazon.
+const AMAZON_BUFFER = 3;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
 // Small batches keep each run well inside the free plan's CPU limit; the cron works through the rest.
 const TASKS_PER_RUN = 3;
@@ -73,6 +78,8 @@ async function api(request, env, path, url) {
   if (path === '/runner/claim' && method === 'POST') return json(await claim(env, body));
   if (path === '/runner/result' && method === 'POST') return runnerResult(env, body);
   if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || ''));
+  if (path === '/runner/prepare' && method === 'POST') return json(await claimPrepare(env));
+  if (path === '/runner/form' && method === 'POST') return saveRunnerForm(env, body);
   if (path === '/runner/heartbeat' && method === 'POST') {
     await setKV(env, 'runner', { seen: now(), ...pickRunnerInfo(body) });
     return json({ ok: true });
@@ -94,8 +101,8 @@ async function state(env, since) {
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const row = await env.DB.prepare(
     `SELECT
-       SUM(status = 'new' AND source IN ('greenhouse','lever') AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_auto,
-       SUM(status = 'new' AND source IN ('amazon','microsoft') AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_manual,
+       SUM(status = 'new' AND ${AUTO_WHERE} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_auto,
+       SUM(status = 'new' AND ${MANUAL_WHERE} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_manual,
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
@@ -112,6 +119,7 @@ async function state(env, since) {
     goal: settings.dailyGoal,
     runner: await getKV(env, 'runner', null),
     refresh: await getKV(env, 'refresh', null),
+    alert: await getKV(env, 'alert', null),
     profileReady: !!(profile.first_name && profile.last_name && profile.email && profile.phone),
   };
 }
@@ -119,11 +127,11 @@ async function state(env, since) {
 async function next(env, lane) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
-  const sources = lane === 'manual' ? MANUAL_SOURCES : AUTO_SOURCES;
   const pick = env.DB.prepare(
-    `SELECT * FROM jobs WHERE status = 'new' AND source IN (?1, ?2) AND (posted_at IS NULL OR posted_at >= ?3)
+    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? MANUAL_WHERE : AUTO_WHERE}
+       AND (posted_at IS NULL OR posted_at >= ?1)
      ORDER BY later ASC, posted_at DESC LIMIT 1`,
-  ).bind(sources[0], sources[1], fresh);
+  ).bind(fresh);
 
   for (let tries = 0; tries < 6; tries++) {
     const job = await pick.first();
@@ -157,7 +165,7 @@ async function list(env, view) {
     const settings = await getSettings(env);
     const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
     const { results } = await env.DB.prepare(
-      `SELECT * FROM jobs WHERE status = 'new' AND source IN ('amazon','microsoft') AND (posted_at IS NULL OR posted_at >= ?)
+      `SELECT * FROM jobs WHERE status = 'new' AND ${MANUAL_WHERE} AND (posted_at IS NULL OR posted_at >= ?)
        ORDER BY posted_at DESC LIMIT 150`,
     ).bind(fresh).all();
     return { jobs: results.map(publicJob) };
@@ -277,6 +285,45 @@ async function runnerResult(env, body) {
      WHERE id = ? AND status IN ('submitting', 'needs_you')`,
   ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
+  return json({ ok: true });
+}
+
+// Amazon: the helper reads a job's questions while you're signed in. Keeps a few jobs prepared ahead of you.
+async function claimPrepare(env) {
+  const settings = await getSettings(env);
+  const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
+  const ready = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'new' AND source = 'amazon' AND form IS NOT NULL AND (posted_at IS NULL OR posted_at >= ?)`,
+  ).bind(fresh).first();
+  if (ready.n >= AMAZON_BUFFER) return { job: null };
+  const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const job = await env.DB.prepare(
+    `SELECT * FROM jobs WHERE status = 'new' AND source = 'amazon' AND form IS NULL AND (posted_at IS NULL OR posted_at >= ?1)
+       AND (needs IS NULL OR (needs = 'preparing' AND updated_at < ?2))
+     ORDER BY later ASC, posted_at DESC LIMIT 1`,
+  ).bind(fresh, stale).first();
+  if (!job) return { job: null };
+  await env.DB.prepare(`UPDATE jobs SET needs = 'preparing', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
+  return { job: { ...publicJob(job), apply_url: job.apply_url } };
+}
+
+async function saveRunnerForm(env, body) {
+  const id = String(body.id || '');
+  const t = now();
+  if (body.form && Array.isArray(body.form.questions)) {
+    await env.DB.prepare(`UPDATE jobs SET form = ?, needs = NULL, note = NULL, updated_at = ? WHERE id = ? AND status = 'new'`)
+      .bind(JSON.stringify(body.form).slice(0, 200_000), t, id).run();
+  } else if (body.outcome === 'applied') {
+    await env.DB.prepare(`UPDATE jobs SET status = 'applied_manual', needs = NULL, note = 'Already applied on the site', sent_at = COALESCE(sent_at, ?), submitted_at = ?, updated_at = ? WHERE id = ?`)
+      .bind(t, t, t, id).run();
+  } else if (body.outcome === 'closed') {
+    await env.DB.prepare(`UPDATE jobs SET status = 'closed', needs = NULL, note = 'Posting closed', updated_at = ? WHERE id = ?`).bind(t, id).run();
+  } else {
+    // Couldn't read it (e.g. signed out): park it and say why.
+    await env.DB.prepare(`UPDATE jobs SET needs = NULL, later = later + 1, note = ?, updated_at = ? WHERE id = ?`)
+      .bind(String(body.note || 'Couldn’t read the application').slice(0, 300), t, id).run();
+  }
+  if (body.alert !== undefined) await setKV(env, 'alert', body.alert ? { text: String(body.alert).slice(0, 300), at: t } : null);
   return json({ ok: true });
 }
 

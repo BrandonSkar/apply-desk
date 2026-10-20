@@ -81,6 +81,7 @@ export const PROFILE_FIELDS = [
   ['grad_year', 'Graduation year', 'Education'],
   ['work_authorized', 'Authorized to work in the US?', 'Common answers'],
   ['needs_sponsorship', 'Need visa sponsorship?', 'Common answers'],
+  ['citizenship', 'Citizenship (country)', 'Common answers'],
   ['willing_to_relocate', 'Willing to relocate?', 'Common answers'],
   ['desired_salary', 'Desired salary', 'Common answers'],
   ['notice_period', 'When can you start?', 'Common answers'],

@@ -91,11 +91,14 @@ async function loadState() {
       ? waiting ? `Helper: ${waiting} to submit` : 'Helper running'
       : waiting ? `Helper offline · ${waiting} waiting` : 'Helper offline';
 
+    // A code someone's waiting on comes first; otherwise any notice from the helper (e.g. signed out of Amazon).
     const codes = s.counts.needs_code;
-    $('#alert').hidden = !codes;
-    $('#alert-text').textContent = codes === 1
+    const text = codes === 1
       ? 'An application is waiting for the verification code the site emailed you.'
-      : `${codes} applications are waiting for verification codes the sites emailed you.`;
+      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : s.alert?.text || '';
+    $('#alert').hidden = !text;
+    $('#alert-text').textContent = text;
+    $('#alert-go').hidden = !codes;
 
     $('#n-queue').textContent = s.counts.queue_auto || '';
     $('#n-manual').textContent = s.counts.queue_manual || '';

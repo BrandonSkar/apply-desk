@@ -205,6 +205,39 @@ test('government ties: answered No, but clearance and eligibility questions are 
   assert.equal(autofill(form, { ...profile, government_ties: 'Yes' }).values.a, undefined);
 });
 
+test('Amazon: experience ranges, degree yes/no, presets from the site, and work eligibility', () => {
+  const sel = (name, label, labels, extra = {}) => ({ name, label, type: 'select', required: true, options: labels.map((l) => ({ label: l, value: l })), ...extra });
+  const twoYear = ['less than 2 years', '2 years to less than 3 years', '3 years to less than 4 years', '4 years to less than 5 years', 'more than 5 years'];
+  const tenMonth = ['less than 10 months', '10 months to less than 1 year', '1 year to less than 2 years', '2 years to less than 3 years', 'more than 3 years'];
+  const form = {
+    questions: [
+      sel('a', 'Which option best describes your total non-internship professional software development experience?', twoYear),
+      sel('b', 'Which option best describes your total software development engineer or related occupational experience?', tenMonth),
+      sel('c', 'Which option best describes your total Object Oriented Design experience?', tenMonth),
+      sel('d', "Do you have a Bachelor's degree or foreign equivalent in Computer Science, Engineering, Mathematics, or a related field?", ['Yes', 'No']),
+      sel('e', 'Have you previously applied to Amazon or any Amazon subsidiary or affiliate?', ['Yes', 'No'], { preset: 'Yes' }),
+      sel('f', 'If offered employment by Amazon, would you be legally eligible to begin employment immediately?', ['Yes', 'No']),
+      sel('g', 'In which country/region do you have citizenship?', ['Afghanistan', 'United States Minor Outlying Islands', 'United States Of America']),
+      sel('h', 'Are you currently or, in the past three years, have you been a direct employee of any government entity?',
+        ['No, I was NEVER a government employee.', 'Yes, I am a FORMER government employee.', 'Yes, I am a CURRENT government employee']),
+    ],
+  };
+  const p = { ...profile, years_experience: '4', degree: "Bachelor's Degree", citizenship: 'United States of America', government_ties: 'No' };
+  const { values, bucket } = autofill(form, p, new Map(), 'Amazon');
+  assert.equal(values.a, '4 years to less than 5 years');
+  assert.equal(values.b, 'more than 3 years');
+  assert.equal(bucket.c, 'open'); // skill-specific: from your answer bank, or you
+  assert.equal(values.d, 'Yes');
+  assert.equal(values.e, 'Yes');
+  assert.equal(bucket.e, 'auto');
+  assert.equal(values.f, 'Yes');
+  assert.equal(values.g, 'United States Of America');
+  assert.equal(values.h, 'No, I was NEVER a government employee.');
+  assert.equal(pickYears(tenMonth.map((l) => ({ label: l })), 0.5), 'less than 10 months');
+  assert.equal(pickYears(tenMonth.map((l) => ({ label: l })), 0.9), '10 months to less than 1 year');
+  assert.equal(pickYears(twoYear.map((l) => ({ label: l })), 3), '3 years to less than 4 years');
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');

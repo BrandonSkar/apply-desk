@@ -12,11 +12,14 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
 import { enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
+import * as amazon from './fillers/amazon.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 
-const VERSION = '0.2.0';
-const FILLERS = { greenhouse, lever };
+const VERSION = '0.3.0';
+const FILLERS = { greenhouse, lever, amazon };
+// Reading an Amazon job's questions opens its application, so it's paced and only done while idle.
+const PREPARE_EVERY_MS = 90_000;
 const POLL_MS = 15_000;
 const WAIT_FOR_YOU_MS = 30 * 60_000;
 const MAX_WAITING = 5;
@@ -157,7 +160,8 @@ async function handle({ job, form, answers, prefs = {} }) {
   const page = await context.newPage();
   try {
     await page.goto(job.apply_url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    const { missing } = await filler.fill(page, { job, form, answers, resumePath: cfg.resumePath, prefs });
+    const { missing, done } = await filler.fill(page, { job, form, answers, resumePath: cfg.resumePath, prefs });
+    if (done) return finish(page, job, true); // the site says it's already submitted
     if (!prefs.smsOptIn) {
       const n = await uncheckSmsOptIns(page).catch(() => 0);
       if (n) log(`  Unchecked ${n} text-message opt-in${n === 1 ? '' : 's'}.`);
@@ -187,6 +191,34 @@ async function handle({ job, form, answers, prefs = {} }) {
     log('  Error:', err.message.split('\n')[0]);
     await screenshot(page, job, 'error');
     await report(job.id, 'failed', err.message.split('\n')[0].slice(0, 300));
+    if (err instanceof amazon.SignedOutError) await api('/runner/form', { method: 'POST', body: { id: '', alert: err.message } }).catch(() => {});
+    await page.close().catch(() => {});
+  }
+}
+
+// ---------- reading Amazon questions ahead of you ----------
+
+let lastPrepare = 0;
+let prepareBlockedUntil = 0;
+
+async function prepareNext() {
+  if (Date.now() < prepareBlockedUntil || Date.now() - lastPrepare < PREPARE_EVERY_MS) return;
+  lastPrepare = Date.now();
+  const { job } = await api('/runner/prepare', { method: 'POST', body: info }).catch(() => ({}));
+  if (!job) return;
+  log(`Reading questions: ${job.company} · ${job.title}`);
+  const page = await context.newPage();
+  try {
+    const r = await amazon.prepare(page, job);
+    const body = r.form ? { id: job.id, form: r.form, alert: null } : { id: job.id, outcome: r.outcome };
+    await api('/runner/form', { method: 'POST', body });
+    log(r.form ? `  Ready on your page (${r.form.questions.length} questions).` : `  ${r.outcome === 'applied' ? 'Already applied.' : 'Posting closed.'}`);
+  } catch (err) {
+    const signedOut = err instanceof amazon.SignedOutError;
+    if (signedOut) prepareBlockedUntil = Date.now() + 30 * 60_000;
+    log('  Couldn’t read it:', err.message.split('\n')[0]);
+    await api('/runner/form', { method: 'POST', body: { id: job.id, note: err.message.split('\n')[0], ...(signedOut ? { alert: err.message } : {}) } }).catch(() => {});
+  } finally {
     await page.close().catch(() => {});
   }
 }
@@ -210,6 +242,7 @@ while (!stopping) {
       lastClaim = 0; // look for the next one right away
       continue;
     }
+    if (claim && waiting.size === 0) await prepareNext();
   } else if (waiting.size >= MAX_WAITING && Date.now() - lastClaim >= POLL_MS) {
     lastClaim = Date.now();
     api('/runner/heartbeat', { method: 'POST', body: info }).catch(() => {});

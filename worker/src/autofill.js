@@ -116,6 +116,9 @@ const AUTO_RULES = [
   [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
   [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
+  [/eligible to (begin|start) (employment|work)|legally (eligible|authori[sz]ed) to (begin|start)/i, (p) => yesNo(p.work_authorized)],
+  [/(country|region).{0,30}citizenship|citizenship.{0,30}(country|region)|country of citizenship/i,
+    (p) => (p.citizenship ? [p.citizenship, /^united states of america$/i.test(p.citizenship) ? null : 'United States of America', /^united states/i] : null)],
   [/sponsor/i, (p) => yesNo(p.needs_sponsorship)],
   [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],
   [/(countr(y|ies)).{0,60}(anticipate|plan|intend|expect|will be).{0,20}work/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
@@ -146,7 +149,15 @@ const SUGGESTED_RULES = [
   [/(citizen|resident) of any of the following|sanctioned|embargoed/i, () => [NO, 'No']],
   [/(live|located|based|reside).{0,25}(in|near|around).{0,30}(seattle|bellevue|redmond|puget|washington|\bwa\b)/i, (p) => (inWA(p) ? [YES, 'Yes'] : yesNo(p.willing_to_relocate))],
   [/relocat/i, (p) => yesNo(p.willing_to_relocate)],
-  [/how many years|years of.{0,40}experience|experience.{0,20}years/i, (p) => ({ years: p.years_experience })],
+  [/outside (of )?the (us|u\.s\.|united states).{0,80}(12|twelve) (consecutive )?months|(12|twelve) consecutive months.{0,80}outside/i, () => [NO, 'No']],
+  [/permanent resident.{0,60}(other|another) country/i, () => [NO, 'No']],
+  [/(do you have|have you (earned|completed)|do you hold).{0,20}\b(a|an)\b.{0,10}(bachelor|master|associate)/i,
+    (p, q) => {
+      const level = /bachelor/i.test(q.label) ? /bachelor|master|ph\.?d|doctor/i : /master/i.test(q.label) ? /master|ph\.?d|doctor/i : /associate|bachelor|master|ph\.?d|doctor/i;
+      return level.test(p.degree || '') ? [YES, 'Yes'] : null;
+    }],
+  [/how many years|years of.{0,40}experience|experience.{0,20}years|total.{0,40}(professional|software|development|engineering).{0,200}experience/i,
+    (p) => ({ years: p.years_experience })],
   [/salary|compensation|pay (expectation|requirement|range)|expected pay/i, (p) => p.desired_salary],
   [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
     (p) => [p.how_heard, /company (web)?site|career'?s? ?(web)?site|careers? page|job (site|posting)|website/i, /job board/i, /linkedin/i, /^other/i]],
@@ -183,22 +194,33 @@ export function pickOption(options, wanted) {
   return null;
 }
 
-// "1-3 years", "4+ years", "Over 6 years", "Less than 1 year" -> the option that contains `years`.
+// The range of years an option covers: "1-3 years", "4 years to less than 5 years", "less than 10 months",
+// "more than 3 years", "4+ years", "Over 6 years". Months count as fractions of a year.
+function yearRange(label) {
+  const t = label.toLowerCase();
+  const unit = (u) => (/month/.test(u || '') ? 1 / 12 : 1);
+  const n = '(\\d+(?:\\.\\d+)?)\\s*(years?|yrs?|months?)?';
+  const tiny = 1e-6;
+  let m;
+  if ((m = new RegExp(`${n}\\s*(?:-|–|to)\\s*(less than\\s*)?${n}`).exec(t))) {
+    return [+m[1] * unit(m[2] || m[5]), +m[4] * unit(m[5] || m[2]) - (m[3] ? tiny : 0)];
+  }
+  if ((m = new RegExp(`(?:over|more than|greater than)\\s*${n}`).exec(t))) return [+m[1] * unit(m[2]) + tiny, Infinity];
+  if ((m = new RegExp(`${n}\\s*(?:\\+|or more)`).exec(t))) return [+m[1] * unit(m[2]), Infinity];
+  if ((m = new RegExp(`at least\\s*${n}`).exec(t))) return [+m[1] * unit(m[2]), Infinity];
+  if ((m = new RegExp(`(?:less than|under|fewer than)\\s*${n}`).exec(t))) return [0, +m[1] * unit(m[2]) - tiny];
+  if ((m = /^(\d+)\b/.exec(t))) return [+m[1], +m[1]];
+  if (/^none|no experience/.test(t)) return [0, 0];
+  return null;
+}
+
+// The option whose range contains `years`.
 export function pickYears(options, years) {
   const y = Number(String(years).replace(/[^\d.]/g, ''));
   if (!options?.length || !String(years).trim() || !Number.isFinite(y)) return null;
   for (const o of options) {
-    const t = o.label.toLowerCase();
-    let lo = null;
-    let hi = null;
-    let m;
-    if ((m = /(\d+)\s*(?:-|–|to)\s*(\d+)/.exec(t))) [lo, hi] = [+m[1], +m[2]];
-    else if ((m = /(?:over|more than|greater than)\s*(\d+)/.exec(t))) [lo, hi] = [+m[1] + 1, Infinity];
-    else if ((m = /(\d+)\s*\+|(\d+) or more|at least (\d+)/.exec(t))) [lo, hi] = [+(m[1] || m[2] || m[3]), Infinity];
-    else if ((m = /(?:less than|under|fewer than)\s*(\d+)/.exec(t))) [lo, hi] = [0, +m[1] - 0.01];
-    else if ((m = /^(\d+)\b/.exec(t))) [lo, hi] = [+m[1], +m[1]];
-    else if (/^none|no experience/.test(t)) [lo, hi] = [0, 0];
-    if (lo != null && y >= lo && y <= hi) return o.label;
+    const r = yearRange(o.label);
+    if (r && y >= r[0] && y <= r[1]) return o.label;
   }
   return null;
 }
@@ -295,6 +317,12 @@ export function autofill(form, profile, bank = new Map(), company = '') {
     if (banked !== undefined) {
       const v = fitBanked(q, fromBank(banked, company));
       if (v) { set(v, 'suggested'); continue; }
+    }
+
+    // Already answered on the site itself (Amazon remembers your answers from earlier applications).
+    if (q.preset !== undefined && q.preset !== null && q.preset !== '') {
+      const v = fitBanked(q, q.preset);
+      if (v) { set(v, 'auto'); continue; }
     }
 
     for (const [re, answer, selectOnly] of SUGGESTED_RULES) {
