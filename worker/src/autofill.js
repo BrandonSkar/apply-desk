@@ -48,7 +48,7 @@ const gender = (v) => {
 const veteran = (v) => {
   if (declined(v)) return [DECLINE];
   if (/^(no|not)\b|not a (protected )?veteran/i.test(v.trim())) {
-    return [/^i am not a (protected )?veteran|^not a (protected )?veteran|^no\b/i, DECLINE];
+    return [/^i am not a (protected )?veteran|^not a (protected )?veteran|^no\b|(have not|never) served|no military/i, DECLINE];
   }
   return [v, DECLINE];
 };
@@ -112,7 +112,7 @@ const AUTO_RULES = [
   [/^(legal )?full name$|^name$/i, (p) => fullName(p)],
   [/^e-?mail/i, (p) => p.email],
   [/^(phone|mobile|cell)/i, (p) => p.phone],
-  [/(government|public|foreign) official|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
+  [/(government|public|foreign) official|official of (any|a) government|member of the military|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
   [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
   [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
@@ -131,7 +131,7 @@ const AUTO_RULES = [
   [/^state(\/province)?$/i, (p) => (/^[a-z]{2}$/i.test(p.state || '') ? [p.state, ...stateNames(p.state)] : stateNames(p.state))],
   [/(state|province).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,40}(state|province)|state of residence/i, (p) => stateNames(p.state)],
   [/zip|postal code/i, (p) => p.zip],
-  [/street address|^address/i, (p) => p.address],
+  [/street address|^address( line ?1)?$/i, (p) => p.address],
   // These come before the gender rule: "Do you identify as transgender?" contains "gender".
   [/transgender|trans experience/i, (p) => transgender(p.transgender), true],
   [/lgbt|queer/i, (p) => lgbtq(p), true],
@@ -139,7 +139,7 @@ const AUTO_RULES = [
   [/gender|\bsex\b/i, (p) => gender(p.gender), true],
   [/hispanic|latin[oax]/i, (p) => hispanic(p.race), true],
   [/race|ethnic|hispanic|latin/i, (p) => eeo(p.race), true],
-  [/veteran/i, (p) => veteran(p.veteran), true],
+  [/veteran|armed forces|military (service|status)|served in the (military|armed)/i, (p) => veteran(p.veteran), true],
   [/disabilit/i, (p) => disability(p.disability), true],
 ];
 
@@ -293,6 +293,12 @@ export function autofill(form, profile, bank = new Map(), company = '') {
       if (v) { set(v, 'auto'); continue; }
     }
 
+    // Text the site already has filled in (your account's email, phone, name) stays as it is.
+    if ((q.type === 'text' || q.type === 'textarea') && typeof q.preset === 'string' && q.preset.trim()) {
+      set(q.preset, 'auto');
+      continue;
+    }
+
     if (SMS.test(q.label)) {
       const yes = wantsSms(profile);
       const v = fit(q, yes
@@ -336,6 +342,12 @@ export function autofill(form, profile, bank = new Map(), company = '') {
     if (q.section === 'demographic' && (q.type === 'select' || q.type === 'multiselect')) {
       const v = fit(q, [DECLINE]);
       if (v) { set(v, 'auto'); continue; }
+    }
+
+    // Only one choice (e.g. a job with a single location): take it.
+    if (q.type === 'select' && q.required && q.options?.length === 1) {
+      set(q.options[0].label, 'auto');
+      continue;
     }
 
     bucket[q.name] = q.required ? 'open' : 'optional';

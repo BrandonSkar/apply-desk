@@ -15,10 +15,12 @@ import { enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.
 import * as amazon from './fillers/amazon.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
+import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.3.0';
-const FILLERS = { greenhouse, lever, amazon };
-// Reading an Amazon job's questions opens its application, so it's paced and only done while idle.
+const VERSION = '0.4.0';
+const FILLERS = { greenhouse, lever, amazon, microsoft };
+const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
+// Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
 const PREPARE_EVERY_MS = 90_000;
 const POLL_MS = 15_000;
 const WAIT_FOR_YOU_MS = 30 * 60_000;
@@ -191,33 +193,32 @@ async function handle({ job, form, answers, prefs = {} }) {
     log('  Error:', err.message.split('\n')[0]);
     await screenshot(page, job, 'error');
     await report(job.id, 'failed', err.message.split('\n')[0].slice(0, 300));
-    if (err instanceof amazon.SignedOutError) await api('/runner/form', { method: 'POST', body: { id: '', alert: err.message } }).catch(() => {});
+    if (signedOut(err)) await api('/runner/form', { method: 'POST', body: { id: '', alert: err.message } }).catch(() => {});
     await page.close().catch(() => {});
   }
 }
 
-// ---------- reading Amazon questions ahead of you ----------
+// ---------- reading Amazon / Microsoft questions ahead of you ----------
 
 let lastPrepare = 0;
-let prepareBlockedUntil = 0;
 
 async function prepareNext() {
-  if (Date.now() < prepareBlockedUntil || Date.now() - lastPrepare < PREPARE_EVERY_MS) return;
+  if (Date.now() - lastPrepare < PREPARE_EVERY_MS) return;
   lastPrepare = Date.now();
   const { job } = await api('/runner/prepare', { method: 'POST', body: info }).catch(() => ({}));
   if (!job) return;
   log(`Reading questions: ${job.company} · ${job.title}`);
   const page = await context.newPage();
   try {
-    const r = await amazon.prepare(page, job);
+    const r = await FILLERS[job.source].prepare(page, job);
     const body = r.form ? { id: job.id, form: r.form, alert: null } : { id: job.id, outcome: r.outcome };
     await api('/runner/form', { method: 'POST', body });
     log(r.form ? `  Ready on your page (${r.form.questions.length} questions).` : `  ${r.outcome === 'applied' ? 'Already applied.' : 'Posting closed.'}`);
   } catch (err) {
-    const signedOut = err instanceof amazon.SignedOutError;
-    if (signedOut) prepareBlockedUntil = Date.now() + 30 * 60_000;
+    // Signed out: the server shows a banner; the job is parked (pushed back) so the next try picks another.
     log('  Couldn’t read it:', err.message.split('\n')[0]);
-    await api('/runner/form', { method: 'POST', body: { id: job.id, note: err.message.split('\n')[0], ...(signedOut ? { alert: err.message } : {}) } }).catch(() => {});
+    await api('/runner/form', { method: 'POST', body: { id: job.id, note: err.message.split('\n')[0], ...(signedOut(err) ? { alert: err.message } : {}) } }).catch(() => {});
+    if (signedOut(err)) lastPrepare = Date.now() + 30 * 60_000;
   } finally {
     await page.close().catch(() => {});
   }

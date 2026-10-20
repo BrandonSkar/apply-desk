@@ -6,13 +6,13 @@ import { loadForm, JobClosedError } from './forms.js';
 import { autofill, bankKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 
-const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon'];
-// Greenhouse and Lever forms come from public APIs. Amazon's need your login, so the helper reads them
-// ("prepares" the job) and the job joins the auto queue once its form is in.
-const AUTO_WHERE = `(source IN ('greenhouse','lever') OR (source = 'amazon' AND form IS NOT NULL))`;
-const MANUAL_WHERE = `(source = 'microsoft' OR (source = 'amazon' AND form IS NULL))`;
-// How many prepared-but-unanswered Amazon jobs to keep ready. Each one leaves an in-progress application on Amazon.
-const AMAZON_BUFFER = 3;
+const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon', 'microsoft'];
+// Greenhouse and Lever forms come from public APIs. Amazon's and Microsoft's need your login, so the helper
+// reads them ("prepares" the job) and the job joins the auto queue once its form is in.
+const AUTO_WHERE = `(source IN ('greenhouse','lever') OR (source IN ('amazon','microsoft') AND form IS NOT NULL))`;
+const MANUAL_WHERE = `(source IN ('amazon','microsoft') AND form IS NULL)`;
+// How many prepared-but-unanswered jobs to keep ready per site. Opening an Amazon application leaves it in progress there.
+const PREPARE_BUFFER = 3;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
 // Small batches keep each run well inside the free plan's CPU limit; the cron works through the rest.
 const TASKS_PER_RUN = 3;
@@ -288,20 +288,23 @@ async function runnerResult(env, body) {
   return json({ ok: true });
 }
 
-// Amazon: the helper reads a job's questions while you're signed in. Keeps a few jobs prepared ahead of you.
+// Amazon and Microsoft: the helper reads a job's questions while you're signed in. Keeps a few ready per site.
 async function claimPrepare(env) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
-  const ready = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'new' AND source = 'amazon' AND form IS NOT NULL AND (posted_at IS NULL OR posted_at >= ?)`,
-  ).bind(fresh).first();
-  if (ready.n >= AMAZON_BUFFER) return { job: null };
+  const { results: counts } = await env.DB.prepare(
+    `SELECT source, COUNT(*) AS n FROM jobs WHERE status = 'new' AND source IN ('amazon','microsoft') AND form IS NOT NULL
+       AND (posted_at IS NULL OR posted_at >= ?) GROUP BY source`,
+  ).bind(fresh).all();
+  const full = new Set(counts.filter((c) => c.n >= PREPARE_BUFFER).map((c) => c.source));
+  const sources = ['amazon', 'microsoft'].filter((s) => !full.has(s));
+  if (!sources.length) return { job: null };
   const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const job = await env.DB.prepare(
-    `SELECT * FROM jobs WHERE status = 'new' AND source = 'amazon' AND form IS NULL AND (posted_at IS NULL OR posted_at >= ?1)
-       AND (needs IS NULL OR (needs = 'preparing' AND updated_at < ?2))
+    `SELECT * FROM jobs WHERE status = 'new' AND source IN (${sources.map(() => '?').join(',')}) AND form IS NULL
+       AND (posted_at IS NULL OR posted_at >= ?) AND (needs IS NULL OR (needs = 'preparing' AND updated_at < ?))
      ORDER BY later ASC, posted_at DESC LIMIT 1`,
-  ).bind(fresh, stale).first();
+  ).bind(...sources, fresh, stale).first();
   if (!job) return { job: null };
   await env.DB.prepare(`UPDATE jobs SET needs = 'preparing', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
   return { job: { ...publicJob(job), apply_url: job.apply_url } };
