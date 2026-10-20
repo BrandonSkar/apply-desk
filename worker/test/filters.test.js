@@ -42,6 +42,11 @@ test('places: Seattle area and US remote, not foreign remote', () => {
   assert.equal(m.place('Kent, WA'), 'area');
   assert.equal(m.place('Kent, United Kingdom'), null);
   assert.equal(m.place('Washington, D.C.'), null);
+  assert.equal(m.place('Spokane, WA'), 'area');
+  assert.equal(m.place('United States, Washington, Vancouver'), 'area');
+  assert.equal(m.place('Vancouver, BC'), null);
+  assert.equal(m.place('Ottawa, ON'), null);
+  assert.equal(m.place('Washington, DC; New York, NY'), null);
   assert.equal(m.place('Remote - US'), 'remote');
   assert.equal(m.place('Remote, Canada; Remote, United States'), 'remote');
   assert.equal(m.place(' -REMOTE, USA-'), 'remote');

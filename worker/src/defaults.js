@@ -27,8 +27,10 @@ export const DEFAULT_SETTINGS = {
   // A title with one of these anywhere is skipped.
   hardExclude: ['\\bintern\\b', 'internship', 'firmware', 'embedded', 'hardware', 'silicon', '\\basic\\b', 'fpga', '\\bphd\\b', '\\bcontract\\b', 'clearance', 'ts/sci', 'high school', 'co-op', 'apprentice'],
 
-  // Seattle-area places. Ambiguous town names need the state next to them.
+  // Anywhere in Washington state ("WA" or "Washington"; Washington, D.C. is excluded in filters.js),
+  // plus Seattle-area towns that some listings name without the state. Ambiguous town names need the state.
   areas: [
+    'washington', 'wa',
     'seattle', 'bellevue', 'redmond', 'kirkland', 'bothell', 'renton', 'issaquah', 'tukwila', 'sammamish',
     'woodinville', 'federal way', 'lynnwood', 'seatac', 'burien', 'tacoma', 'puget sound',
     'kent,? (wa|washington)', 'everett,? (wa|washington)', 'auburn,? (wa|washington)',
