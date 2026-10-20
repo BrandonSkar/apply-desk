@@ -291,6 +291,26 @@ test('Microsoft: profile email beats the site\'s, other site text is kept, legal
   assert.equal(autofill(form, { ...p, preferred_name: 'Sammy' }).values.leg, undefined);
 });
 
+test('work authorization vs. sponsorship vs. "have you worked at" wording', () => {
+  const yn = [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }];
+  const sel = (name, label) => ({ name, label, type: 'select', required: true, options: yn });
+  const form = {
+    questions: [
+      sel('a', 'Do you currently have unrestricted work authorization in the United States?'),
+      sel('b', 'Will you require sponsorship to obtain work authorization in the US?'),
+      sel('c', 'Have you previously worked at Stripe?'),
+      sel('d', 'Are you currently employed by a Microsoft subsidiary?'),
+      { name: 'e', label: 'How long have you been working with Python or Golang in a professional setting?', type: 'text', required: true },
+    ],
+  };
+  const { values } = autofill(form, { ...profile, work_authorized: 'Yes', needs_sponsorship: 'No' });
+  assert.equal(values.a, 'Yes');
+  assert.equal(values.b, 'No');
+  assert.equal(values.c, 'No');
+  assert.equal(values.d, 'No');
+  assert.notEqual(values.e, 'No');
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');

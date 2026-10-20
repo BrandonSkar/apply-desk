@@ -15,12 +15,20 @@ async function getJSON(url) {
 }
 
 const titleCase = (s) => s.replace(/(^|[-_ ])(\w)/g, (_, sep, c) => (sep ? ' ' : '') + c.toUpperCase());
+// Board names that don't title-case into the company's real name.
+const NAMES = {
+  openai: 'OpenAI', elevenlabs: 'ElevenLabs', posthog: 'PostHog', workos: 'WorkOS', clickhouse: 'ClickHouse',
+  lancedb: 'LanceDB', andurilindustries: 'Anduril', grafanalabs: 'Grafana Labs', customerio: 'Customer.io',
+  coreweave: 'CoreWeave', zoominfo: 'ZoomInfo', shieldai: 'Shield AI', scaleai: 'Scale AI', doordashusa: 'DoorDash',
+};
+const companyName = (board) => NAMES[board] || titleCase(board);
 
 // One task = one HTTP request. A refresh works through the list a slice at a time.
 export function buildTasks(s) {
   const tasks = [];
   for (const board of s.greenhouse) tasks.push({ kind: 'greenhouse', board });
   for (const board of s.lever) tasks.push({ kind: 'lever', board });
+  for (const board of s.ashby || []) tasks.push({ kind: 'ashby', board });
   for (const q of s.amazon.queries) for (const loc of s.amazon.locations) tasks.push({ kind: 'amazon', q, loc });
   for (const q of s.microsoft.queries)
     for (const loc of s.microsoft.locations)
@@ -32,6 +40,7 @@ export async function runTask(t) {
   switch (t.kind) {
     case 'greenhouse': return greenhouse(t.board);
     case 'lever': return lever(t.board);
+    case 'ashby': return ashby(t.board);
     case 'amazon': return amazon(t.q, t.loc);
     case 'microsoft': return microsoft(t.q, t.loc, t.start);
     default: return [];
@@ -44,7 +53,7 @@ async function greenhouse(board) {
     id: `gh:${board}:${j.id}`,
     source: 'greenhouse',
     board,
-    company: j.company_name || titleCase(board),
+    company: j.company_name || companyName(board),
     title: j.title,
     location: j.location?.name || '',
     remote: false,
@@ -61,7 +70,7 @@ async function lever(board) {
     id: `lever:${board}:${j.id}`,
     source: 'lever',
     board,
-    company: titleCase(board),
+    company: companyName(board),
     title: j.text,
     location: (j.categories?.allLocations || [j.categories?.location]).filter(Boolean).join('; '),
     remote: j.workplaceType === 'remote',
@@ -70,6 +79,28 @@ async function lever(board) {
     apply_url: j.applyUrl,
     posted_at: j.createdAt ? new Date(j.createdAt).toISOString() : null,
   }));
+}
+
+async function ashby(board) {
+  const d = await getJSON(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(board)}?includeCompensation=false`);
+  return (d.jobs || []).filter((j) => j.isListed !== false).map((j) => {
+    // Ashby's isRemote is true even for hybrid jobs, so go by workplaceType (Remote / Hybrid / OnSite) and the
+    // job's country instead; a "Remote" entry among its locations still counts.
+    const country = String(j.address?.postalAddress?.addressCountry || '').trim();
+    return {
+      id: `ashby:${board}:${j.id}`,
+      source: 'ashby',
+      board,
+      company: companyName(board),
+      title: j.title,
+      location: [j.location, ...(j.secondaryLocations || []).map((s) => s.location)].filter(Boolean).join('; '),
+      remote: /^remote$/i.test(j.workplaceType || ''),
+      country: /^(united states|united states of america|usa|us|u\.s\.)$/i.test(country) ? 'US' : country ? 'other' : '',
+      url: j.jobUrl,
+      apply_url: j.applyUrl || `${j.jobUrl}/application`,
+      posted_at: j.publishedAt || null,
+    };
+  });
 }
 
 async function amazon(q, loc) {

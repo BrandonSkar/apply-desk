@@ -57,6 +57,13 @@ test('places: Seattle area and US remote, not foreign remote', () => {
   assert.equal(m.place('Toronto', { remote: true, country: 'CA' }), null);
 });
 
+test('Ashby-style jobs: hybrid elsewhere is out, remote abroad is out, US remote and Seattle are in', () => {
+  assert.equal(m.place('San Francisco; New York', { remote: false, country: 'US' }), null);
+  assert.equal(m.place('Bucharest', { remote: true, country: 'other' }), null);
+  assert.equal(m.place('Remote', { remote: true, country: 'US' }), 'remote');
+  assert.equal(m.place('San Francisco; Remote; Seattle', { remote: false, country: 'US' }), 'area');
+});
+
 test('filterJobs drops stale postings and marks remote', () => {
   const now = Date.parse('2026-10-19T12:00:00Z');
   const jobs = [

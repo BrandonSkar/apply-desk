@@ -8,7 +8,8 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ApplyDesk/1.0 (+https://br
 export class JobClosedError extends Error {}
 
 export async function loadForm(job) {
-  const form = job.source === 'greenhouse' ? await greenhouseForm(job) : job.source === 'lever' ? await leverForm(job) : null;
+  const loaders = { greenhouse: greenhouseForm, lever: leverForm, ashby: ashbyForm };
+  const form = loaders[job.source] ? await loaders[job.source](job) : null;
   for (const q of form?.questions || []) q.label = String(q.label || '').replace(/\s+/g, ' ').trim() || q.name;
   return form;
 }
@@ -163,6 +164,55 @@ async function leverForm(job) {
     // The description is a nice-to-have.
   }
   return { kind: 'lever', questions, description: description.trim() };
+}
+
+// ---------- Ashby ----------
+// The application page loads its questions from this public GraphQL query; each field has a path (its id on the
+// page), a type, and its choices. Voluntary self-ID comes as a separate "survey" form.
+
+const ASHBY_QUERY = `query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: String!) {
+  jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, jobPostingId: $jobPostingId) {
+    id title descriptionHtml
+    applicationForm { sections { title isHidden fieldEntries { id field isRequired isHidden descriptionHtml } } }
+    surveyForms { sections { title isHidden fieldEntries { id field isRequired isHidden descriptionHtml } } }
+  }
+}`;
+
+const ASHBY_TYPES = {
+  String: 'text', Email: 'text', Phone: 'text', Number: 'text', Location: 'text', Date: 'text',
+  LongText: 'textarea', Boolean: 'select', ValueSelect: 'select', MultiValueSelect: 'multiselect', File: 'file',
+};
+
+async function ashbyForm(job) {
+  const [, board, pid] = job.id.split(':');
+  const res = await fetch('https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobPosting', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': UA },
+    body: JSON.stringify({ operationName: 'ApiJobPosting', variables: { organizationHostedJobsPageName: board, jobPostingId: pid }, query: ASHBY_QUERY }),
+  });
+  if (!res.ok) throw new Error(`Ashby returned ${res.status}`);
+  const jp = (await res.json()).data?.jobPosting;
+  if (!jp) throw new JobClosedError('posting closed');
+
+  const questions = [];
+  const add = (entry, section) => {
+    const f = entry.field;
+    const type = f && ASHBY_TYPES[f.type];
+    if (!type || entry.isHidden) return;
+    const q = { name: f.path, path: f.path, label: f.title, type, required: !!entry.isRequired, ashbyType: f.type };
+    if (section) q.section = section;
+    if (f.type === 'Boolean') q.options = [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }];
+    if (f.selectableValues?.length) q.options = f.selectableValues.map((v) => ({ label: v.label, value: String(v.value) }));
+    if (f.path === '_systemfield_resume') q.kind = 'resume';
+    else if (f.type === 'File') q.kind = 'file';
+    if (f.type === 'Location') q.kind = 'location';
+    if (f.type === 'Date') q.kind = 'date';
+    if (entry.descriptionHtml) q.help = htmlToText(entry.descriptionHtml).slice(0, 400);
+    questions.push(q);
+  };
+  for (const s of jp.applicationForm?.sections || []) if (!s.isHidden) for (const e of s.fieldEntries || []) add(e);
+  for (const sf of jp.surveyForms || []) for (const s of sf.sections || []) if (!s.isHidden) for (const e of s.fieldEntries || []) add(e, 'demographic');
+  return { kind: 'ashby', questions, description: htmlToText(jp.descriptionHtml || '') };
 }
 
 function hasRequiredAttr(html, name) {

@@ -47,6 +47,12 @@ export const DEFAULT_SETTINGS = {
     'tanium', 'toast', 'truveta', 'twilio', 'twitch', 'upstart', 'vercel', 'zoominfo',
   ],
   lever: ['gopuff', 'palantir', 'rover', 'shieldai', 'zoox'],
+  // Ashby job boards (jobs.ashbyhq.com/<name>), many of them startups.
+  ashby: [
+    'alchemy', 'astronomer', 'baseten', 'benchling', 'cerebras', 'clickhouse', 'cohere', 'drata', 'elevenlabs',
+    'harvey', 'hex', 'lancedb', 'notion', 'openai', 'posthog', 'ramp', 'replit', 'resend', 'skydio', 'temporal',
+    'vanta', 'workos', 'writer',
+  ],
   amazon: {
     queries: ['software development engineer', 'front end engineer', 'software engineer'],
     locations: ['Seattle, WA', 'Bellevue, WA'],
@@ -54,7 +60,7 @@ export const DEFAULT_SETTINGS = {
   microsoft: {
     queries: ['software engineer'],
     locations: ['Redmond, WA', 'United States'],
-    pages: 4, // 10 newest jobs per page
+    pages: 2, // 10 newest jobs per page; Microsoft rate-limits heavier searching
   },
 };
 

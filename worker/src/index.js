@@ -6,7 +6,7 @@ import { loadForm, JobClosedError } from './forms.js';
 import { autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 
-const AUTO_SOURCES = ['greenhouse', 'lever', 'amazon', 'microsoft'];
+const AUTO_SOURCES = ['greenhouse', 'lever', 'ashby', 'amazon', 'microsoft'];
 // Greenhouse and Lever forms come from public APIs. Amazon's and Microsoft's need your login, so the helper
 // reads them ("prepares" the job) and the job joins the auto queue once its form is in.
 const SIGNED_IN_SOURCES = ['amazon', 'microsoft'];
@@ -14,7 +14,7 @@ const SIGNED_IN_SOURCES = ['amazon', 'microsoft'];
 const autoWhere = (paused = {}) => {
   const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
   const signedIn = open.length ? ` OR (source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NOT NULL)` : '';
-  return `(source IN ('greenhouse','lever')${signedIn})`;
+  return `(source IN ('greenhouse','lever','ashby')${signedIn})`;
 };
 const manualWhere = (paused = {}) => {
   const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
@@ -27,6 +27,7 @@ const PREPARE_BUFFER = 5;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
 // Small batches keep each run well inside the free plan's CPU limit; the cron works through the rest.
 const TASKS_PER_RUN = 3;
+const BACKOFF_MS = 3 * 60 * 60 * 1000;
 const STALE_SUBMIT_MS = 20 * 60 * 1000;
 
 const now = () => new Date().toISOString();
@@ -412,18 +413,25 @@ async function refreshSlice(env) {
   if (cycleDone) info.lastCycleAt = now();
   await setKV(env, 'refresh', info);
 
+  // A source that says "too many requests" (429) is left alone for a few hours instead of being retried.
+  const backoff = await getKV(env, 'backoff', {});
   const found = [];
   const errors = [];
   for (const t of slice) {
+    if (backoff[t.kind] && Date.now() < Date.parse(backoff[t.kind])) continue;
     try {
       found.push(...(await runTask(t)));
     } catch (err) {
       errors.push(`${t.board || t.kind}: ${err.message}`);
+      if (/^429\b/.test(err.message)) {
+        backoff[t.kind] = new Date(Date.now() + BACKOFF_MS).toISOString();
+        await setKV(env, 'backoff', backoff);
+      }
     }
   }
   const kept = filterJobs(found, settings);
   const added = await insertJobs(env, kept);
-  if (errors.length) await setKV(env, 'refresh', { ...info, errors: [...errors, ...(prev.errors || [])].slice(0, 8) });
+  if (errors.length) await setKV(env, 'refresh', { ...info, errors: [...errors.map((e) => `${now().slice(5, 16)} ${e}`), ...(prev.errors || [])].slice(0, 8) });
   return { added, scanned: found.length, matched: kept.length, cursor, total: tasks.length, cycleDone, errors };
 }
 
@@ -489,7 +497,7 @@ async function saveSettings(env, body) {
   s.dailyGoal = num(body.dailyGoal, 1, 200, s.dailyGoal);
   s.maxAgeDays = num(body.maxAgeDays, 1, 120, s.maxAgeDays);
   s.remoteUS = body.remoteUS !== false;
-  for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas', 'greenhouse', 'lever']) {
+  for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas', 'greenhouse', 'lever', 'ashby']) {
     const v = strings(body[k]);
     if (v) s[k] = v;
   }
@@ -503,6 +511,8 @@ async function saveSettings(env, body) {
     }
   }
   for (const k of ['greenhouse', 'lever']) s[k] = s[k].map((b) => b.toLowerCase()).filter((b) => /^[a-z0-9-]+$/.test(b));
+  // Ashby board names can have capitals and dots (they're case-sensitive in the URL).
+  s.ashby = s.ashby.filter((b) => /^[A-Za-z0-9.-]+$/.test(b));
   await setKV(env, 'settings', s);
   return json({ ok: true, settings: s });
 }

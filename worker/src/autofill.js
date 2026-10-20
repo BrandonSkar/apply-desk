@@ -17,6 +17,7 @@ export const wantsSms = (profile) => /^\s*y/i.test(profile?.sms_opt_in || '');
 export const PROFILE_DRIVEN = new Set([
   'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'name', 'org', 'location', 'resume',
   'urls[LinkedIn]', 'urls[GitHub]', 'urls[Portfolio]', 'urls[Other]',
+  '_systemfield_name', '_systemfield_email', '_systemfield_location', '_systemfield_resume',
 ]);
 
 // Regexes pick a dropdown option; the trailing string is the answer for a text box.
@@ -98,6 +99,10 @@ const BY_NAME = {
   'urls[LinkedIn]': (p) => p.linkedin,
   'urls[GitHub]': (p) => p.github,
   'urls[Portfolio]': (p) => p.website,
+  // Ashby's built-in fields ("Legal Name", "Email", "Where are you currently located?").
+  _systemfield_name: (p) => fullName(p),
+  _systemfield_email: (p) => p.email,
+  _systemfield_location: (p) => [p.city, p.state].filter(Boolean).join(', '),
 };
 
 // [label test, answer(profile, question), selectOnly?]
@@ -119,6 +124,9 @@ const AUTO_RULES = [
   [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
   [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
+  // "Do you have unrestricted work authorization in the US?" (but not "...require sponsorship to obtain work authorization")
+  [/^(?!.*sponsor).*(work authori[sz]ation|authori[sz]ation to work|employment authori[sz]ation|authori[sz]ed for employment)/i,
+    (p) => yesNo(p.work_authorized)],
   [/eligible to (begin|start) (employment|work)|legally (eligible|authori[sz]ed) to (begin|start)/i, (p) => yesNo(p.work_authorized)],
   [/(country|region).{0,30}citizenship|citizenship.{0,30}(country|region)|country of citizenship/i,
     (p) => (p.citizenship ? [p.citizenship, /^united states of america$/i.test(p.citizenship) ? null : 'United States of America', /^united states/i] : null)],
@@ -165,7 +173,9 @@ const SUGGESTED_RULES = [
   [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
     (p) => [p.how_heard, /company (web)?site|career'?s? ?(web)?site|careers? page|job (site|posting)|website/i, /job board/i, /linkedin/i, /^other/i]],
   [/\breferr(ed|al)|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
-  [/(previously|ever|currently|formerly|have you).{0,40}(work|employ)|former employee|current employee/i,
+  // "Have you worked at X?", "previously employed by X": needs at/for/by/with, so "work authorization" and
+  // "have you been working with Python" don't count.
+  [/(previously|ever|currently|formerly|have you).{0,40}\b(work(ed)?|employed)\b.{0,25}\b(at|for|by|with)\b|former employee|current employee/i,
     () => [NO, /\b(have not|haven.t|never|not previously|not been)\b/i, 'No']],
   [/non-?compete|non-?solicit|restrictive covenant/i, () => [NO, 'No']],
   [/accommodation/i, () => [NO, 'No']],

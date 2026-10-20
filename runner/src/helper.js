@@ -13,12 +13,13 @@ import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
 import { enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
+import * as ashby from './fillers/ashby.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.5.0';
-const FILLERS = { greenhouse, lever, amazon, microsoft };
+const VERSION = '0.6.0';
+const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
 const PREPARE_EVERY_MS = 90_000;

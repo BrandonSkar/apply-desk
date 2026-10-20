@@ -4,7 +4,7 @@ One page for job applications. Apply Desk finds new postings, fills in everythin
 
 It also ships an **MCP server**, so you can work the same queue by chatting with Claude: "next job", answer in chat, done.
 
-- **Finds jobs** from public job-board APIs: Greenhouse and Lever company boards, Amazon Jobs, and Microsoft Careers. It filters by title, seniority, location (an area plus US remote) and posting age, and checks again every few minutes.
+- **Finds jobs** from public job-board APIs: Greenhouse, Lever and Ashby company boards, Amazon Jobs, and Microsoft Careers. It filters by title, seniority, location (an area plus US remote) and posting age, and checks again every few minutes.
 - **Answers what it can.** Contact details, work authorization, sponsorship, location, voluntary self-ID and the usual "how did you hear about us" come from your profile, along with Greenhouse's built-in Employment and Education sections, which aren't in its public question list. Answers you type are remembered for the next company that asks ("Why {company}?"), so each application asks less than the one before.
 - **Submits for you.** A Playwright helper opens the application in Chrome, fills it, attaches your resume, submits it, and saves a screenshot of the confirmation. For Amazon and Microsoft, which need a sign-in, the helper uses its own browser where you've signed in once, and reads each job's questions ahead of time so they show on your page like any other.
 - **Keeps you in the loop.** Nothing is sent until you press Send. If a site shows a CAPTCHA or asks for something unexpected, the helper leaves that form open for you and keeps working through the rest of the queue. The page shows it under **Needs your attention**.
@@ -112,7 +112,7 @@ Unit tests cover the title and location filters and the autofill rules, using qu
 
 ## Roadmap
 
-- Ashby job boards
+- Workday job listings for large employers
 - Drafting answers to essay questions from the job description, for you to edit
 
 ## License
