@@ -36,14 +36,17 @@ export const DEFAULT_SETTINGS = {
     'kent,? (wa|washington)', 'everett,? (wa|washington)', 'auburn,? (wa|washington)',
   ],
 
+  // Companies that hire software engineers in Washington or remotely (checked 2026-10-19 against ~400 names).
   greenhouse: [
-    'abnormalsecurity', 'affirm', 'airbnb', 'anthropic', 'asana', 'braze', 'brex', 'calendly', 'chime', 'circleci',
-    'cloudflare', 'coinbase', 'databricks', 'discord', 'doordashusa', 'dropbox', 'elastic', 'figma', 'fivetran',
-    'flexport', 'gitlab', 'gusto', 'instacart', 'klaviyo', 'launchdarkly', 'lyft', 'mercury', 'mongodb', 'newrelic',
-    'nintendo', 'offerup', 'okta', 'pinterest', 'reddit', 'robinhood', 'roblox', 'samsara', 'scaleai',
-    'sigmacomputing', 'smartsheet', 'spacex', 'stripe', 'toast', 'truveta', 'twilio', 'twitch', 'upstart', 'vercel',
+    'abnormalsecurity', 'affirm', 'airbnb', 'andurilindustries', 'anthropic', 'asana', 'axon', 'bitwarden', 'block',
+    'braze', 'brex', 'calendly', 'chime', 'circleci', 'cloudflare', 'coinbase', 'consensys', 'coreweave', 'cribl',
+    'customerio', 'databricks', 'discord', 'doordashusa', 'dropbox', 'elastic', 'figma', 'fivetran', 'flexport',
+    'gitlab', 'grafanalabs', 'gusto', 'honeycomb', 'instacart', 'klaviyo', 'launchdarkly', 'lyft', 'mercury',
+    'mongodb', 'motional', 'mozilla', 'newrelic', 'nintendo', 'offerup', 'okta', 'pinterest', 'reddit', 'robinhood',
+    'roblox', 'samsara', 'scaleai', 'sigmacomputing', 'smartsheet', 'spacex', 'stripe', 'tailscale', 'talkspace',
+    'tanium', 'toast', 'truveta', 'twilio', 'twitch', 'upstart', 'vercel', 'zoominfo',
   ],
-  lever: ['palantir', 'rover', 'shieldai', 'zoox'],
+  lever: ['gopuff', 'palantir', 'rover', 'shieldai', 'zoox'],
   amazon: {
     queries: ['software development engineer', 'front end engineer', 'software engineer'],
     locations: ['Seattle, WA', 'Bellevue, WA'],
