@@ -17,7 +17,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const FILLERS = { greenhouse, lever, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
