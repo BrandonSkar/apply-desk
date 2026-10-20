@@ -35,7 +35,8 @@ function scan(page) {
       return textOf(byFor) || (el.getAttribute('aria-labelledby') || '').split(' ').map((i) => textOf(document.getElementById(i))).join(' ').trim();
     };
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const form = document.querySelector('form') || document.body;
+    // The application's own form (the page header has a separate search form).
+    const form = document.querySelector('[id^="Contact_Information_"]')?.closest('form') || document.body;
     const out = [];
     const groups = new Set();
     let section = '';
@@ -115,6 +116,7 @@ export async function prepare(page, job) {
     }
     questions.push(q);
   }
+  if (questions.length < 5) throw new Error(`Only found ${questions.length} questions on the Microsoft form.`);
   return { form: { kind: 'microsoft', questions, description: '' } };
 }
 

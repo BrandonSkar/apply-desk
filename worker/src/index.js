@@ -313,7 +313,11 @@ async function claimPrepare(env) {
 async function saveRunnerForm(env, body) {
   const id = String(body.id || '');
   const t = now();
-  if (body.form && Array.isArray(body.form.questions)) {
+  if (body.form && Array.isArray(body.form.questions) && !body.form.questions.length) {
+    // A form with no questions means the reader missed them; don't put it in front of you as "nothing to answer".
+    await env.DB.prepare(`UPDATE jobs SET needs = NULL, later = later + 1, note = 'Couldn’t read the questions', updated_at = ? WHERE id = ?`)
+      .bind(t, id).run();
+  } else if (body.form && Array.isArray(body.form.questions)) {
     await env.DB.prepare(`UPDATE jobs SET form = ?, needs = NULL, note = NULL, updated_at = ? WHERE id = ? AND status = 'new'`)
       .bind(JSON.stringify(body.form).slice(0, 200_000), t, id).run();
   } else if (body.outcome === 'applied') {
