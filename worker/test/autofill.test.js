@@ -238,6 +238,36 @@ test('Amazon: experience ranges, degree yes/no, presets from the site, and work 
   assert.equal(pickYears(twoYear.map((l) => ({ label: l })), 3), '3 years to less than 4 years');
 });
 
+test('Microsoft: profile email beats the site\'s, other site text is kept, legal name, address line 2', () => {
+  const yn = [{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }];
+  const form = {
+    questions: [
+      { name: 'e', label: 'Email', type: 'text', required: true, preset: 'someone@hotmail.com' },
+      { name: 'ph', label: 'Phone number', type: 'text', required: true, preset: '2065550100' },
+      { name: 'ln', label: 'Preferred Last Name', type: 'text', required: true, preset: 'Rivera' },
+      { name: 'leg', label: 'Is your legal name the same as your preferred name?', type: 'select', required: true, options: yn },
+      { name: 'a1', label: 'Address', type: 'text', required: true },
+      { name: 'a2', label: 'Address Line 2', type: 'text', required: false },
+      { name: 'af', label: 'U.S. Armed Forces Status', type: 'select', required: true,
+        options: ['I am currently serving (or have served)', 'I have not served', 'I prefer not to answer'].map((l) => ({ label: l, value: l })) },
+      { name: 'gov', label: 'Are you currently or have you ever been a member of the military, a civilian employee, or an official of any government, whether national, state, local, or foreign?', type: 'select', required: true, options: yn },
+      { name: 'loc', label: 'Where would you like to apply for Software Engineer II', type: 'select', required: true, options: [{ label: 'United States, Washington, Redmond', value: 'x' }] },
+    ],
+  };
+  const p = { ...profile, address: '123 Main St', veteran: 'Not a veteran', government_ties: 'No' };
+  const { values } = autofill(form, p);
+  assert.equal(values.e, 'sam@example.com');
+  assert.equal(values.ph, '2065550100');
+  assert.equal(values.ln, 'Rivera');
+  assert.equal(values.leg, 'Yes');
+  assert.equal(values.a1, '123 Main St');
+  assert.equal(values.a2, undefined);
+  assert.equal(values.af, 'I have not served');
+  assert.equal(values.gov, 'No');
+  assert.equal(values.loc, 'United States, Washington, Redmond');
+  assert.equal(autofill(form, { ...p, preferred_name: 'Sammy' }).values.leg, undefined);
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');

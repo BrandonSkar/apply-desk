@@ -105,6 +105,9 @@ const AUTO_RULES = [
   [/linkedin/i, (p) => p.linkedin],
   [/github/i, (p) => p.github],
   [/^(personal )?(website|portfolio)|website url|portfolio (url|link)/i, (p) => p.website],
+  // No different preferred name in the profile means the legal name is the one you go by.
+  [/legal name.{0,40}(same|match)|same as your (legal|preferred) name/i,
+    (p) => (!p.preferred_name || p.preferred_name === p.first_name ? [YES, 'Yes'] : null)],
   [/preferred (first )?name/i, (p) => p.preferred_name || p.first_name],
   [/pronoun/i, (p) => (p.pronouns ? [p.pronouns, new RegExp(`^${escapeRe(p.pronouns.split('/')[0].trim())}\\b`, 'i')] : null)],
   [/^(legal )?first name/i, (p) => p.first_name],
@@ -161,7 +164,7 @@ const SUGGESTED_RULES = [
   [/salary|compensation|pay (expectation|requirement|range)|expected pay/i, (p) => p.desired_salary],
   [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
     (p) => [p.how_heard, /company (web)?site|career'?s? ?(web)?site|careers? page|job (site|posting)|website/i, /job board/i, /linkedin/i, /^other/i]],
-  [/referr|who referred|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
+  [/\breferr(ed|al)|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
   [/(previously|ever|currently|formerly|have you).{0,40}(work|employ)|former employee|current employee/i,
     () => [NO, /\b(have not|haven.t|never|not previously|not been)\b/i, 'No']],
   [/non-?compete|non-?solicit|restrictive covenant/i, () => [NO, 'No']],
@@ -293,8 +296,9 @@ export function autofill(form, profile, bank = new Map(), company = '') {
       if (v) { set(v, 'auto'); continue; }
     }
 
-    // Text the site already has filled in (your account's email, phone, name) stays as it is.
-    if ((q.type === 'text' || q.type === 'textarea') && typeof q.preset === 'string' && q.preset.trim()) {
+    // Text the site already has filled in (your account's phone, name) stays as it is. Not email: applications
+    // always use the profile's email, even when you sign in to a site with a different one.
+    if ((q.type === 'text' || q.type === 'textarea') && typeof q.preset === 'string' && q.preset.trim() && !/e-?mail/i.test(q.label)) {
       set(q.preset, 'auto');
       continue;
     }
