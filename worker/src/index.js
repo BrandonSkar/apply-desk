@@ -1,7 +1,7 @@
 // Apply Desk: the /jobs page, its API, the scheduled job refresh, and the endpoints the PC helper polls.
 import { DEFAULT_SETTINGS, EMPTY_PROFILE, PROFILE_FIELDS } from './defaults.js';
 import { buildTasks, runTask } from './sources.js';
-import { filterJobs } from './filters.js';
+import { filterJobs, requiredYears } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
 import { autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
@@ -118,8 +118,8 @@ async function state(env, since) {
   const paused = await getKV(env, 'paused', {});
   const row = await env.DB.prepare(
     `SELECT
-       SUM(status = 'new' AND ${autoWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_auto,
-       SUM(status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1)) AS queue_manual,
+       SUM(status = 'new' AND ${autoWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_auto,
+       SUM(status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_manual,
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
@@ -128,7 +128,7 @@ async function state(env, since) {
        SUM(status IN ('submitted','applied_manual')) AS submitted_total,
        SUM(sent_at >= ?2) AS sent_today
      FROM jobs`,
-  ).bind(fresh, start).first();
+  ).bind(fresh, start, settings.maxYearsRequired || 99).first();
   const counts = Object.fromEntries(Object.entries(row || {}).map(([k, v]) => [k, v || 0]));
   const profile = await getProfile(env);
   return {
@@ -146,13 +146,15 @@ async function next(env, lane) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const paused = await getKV(env, 'paused', {});
+  const maxYears = settings.maxYearsRequired || 99;
   const pick = env.DB.prepare(
     `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}
-       AND (posted_at IS NULL OR posted_at >= ?1)
+       AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2)
      ORDER BY later ASC, posted_at DESC LIMIT 1`,
-  ).bind(fresh);
+  ).bind(fresh, maxYears);
 
-  for (let tries = 0; tries < 6; tries++) {
+  // Jobs whose requirement isn't known yet get checked as their description loads; over-limit ones drop out.
+  for (let tries = 0; tries < 12; tries++) {
     const job = await pick.first();
     if (!job) return { job: null };
     if (lane === 'manual') return { job: publicJob(job) };
@@ -161,7 +163,10 @@ async function next(env, lane) {
     if (!form) {
       try {
         form = await loadForm(job);
-        await env.DB.prepare('UPDATE jobs SET form = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(form), now(), job.id).run();
+        const years = requiredYears(form.description);
+        await env.DB.prepare('UPDATE jobs SET form = ?, min_years = COALESCE(min_years, ?), updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(form), years, now(), job.id).run();
+        if (years != null && years > maxYears) continue;
       } catch (err) {
         if (err instanceof JobClosedError) {
           await env.DB.prepare(`UPDATE jobs SET status = 'closed', note = 'Posting closed', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
@@ -170,6 +175,13 @@ async function next(env, lane) {
             .bind(`Couldn't load the form: ${err.message}`.slice(0, 300), now(), job.id).run();
         }
         continue;
+      }
+    } else if (job.min_years == null && form.description) {
+      // Read before this filter existed: check it now.
+      const years = requiredYears(form.description);
+      if (years != null) {
+        await env.DB.prepare('UPDATE jobs SET min_years = ? WHERE id = ?').bind(years, job.id).run();
+        if (years > maxYears) continue;
       }
     }
     const profile = await getProfile(env);
@@ -435,7 +447,7 @@ async function refreshSlice(env) {
   return { added, scanned: found.length, matched: kept.length, cursor, total: tasks.length, cycleDone, errors };
 }
 
-const JOB_COLS = ['id', 'source', 'board', 'company', 'title', 'location', 'remote', 'url', 'apply_url', 'posted_at', 'found_at'];
+const JOB_COLS = ['id', 'source', 'board', 'company', 'title', 'location', 'remote', 'url', 'apply_url', 'posted_at', 'found_at', 'min_years'];
 
 async function insertJobs(env, jobs) {
   if (!jobs.length) return 0;
@@ -447,7 +459,7 @@ async function insertJobs(env, jobs) {
     const row = `(${JOB_COLS.map(() => '?').join(',')})`;
     const values = chunk.flatMap((j) => [
       j.id, j.source, j.board, String(j.company).slice(0, 200), String(j.title).slice(0, 300),
-      String(j.location || '').slice(0, 300), j.remote ? 1 : 0, j.url, j.apply_url, j.posted_at, t,
+      String(j.location || '').slice(0, 300), j.remote ? 1 : 0, j.url, j.apply_url, j.posted_at, t, j.min_years ?? null,
     ]);
     stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO jobs (${JOB_COLS.join(',')}) VALUES ${chunk.map(() => row).join(',')}`).bind(...values));
   }
@@ -496,6 +508,7 @@ async function saveSettings(env, body) {
   const strings = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 200) : null);
   s.dailyGoal = num(body.dailyGoal, 1, 200, s.dailyGoal);
   s.maxAgeDays = num(body.maxAgeDays, 1, 120, s.maxAgeDays);
+  s.maxYearsRequired = num(body.maxYearsRequired, 1, 30, s.maxYearsRequired);
   s.remoteUS = body.remoteUS !== false;
   for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas', 'greenhouse', 'lever', 'ashby']) {
     const v = strings(body[k]);

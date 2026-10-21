@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeMatcher, filterJobs } from '../src/filters.js';
+import { makeMatcher, filterJobs, requiredYears } from '../src/filters.js';
 import { DEFAULT_SETTINGS } from '../src/defaults.js';
 
 const m = makeMatcher(DEFAULT_SETTINGS);
@@ -62,6 +62,25 @@ test('Ashby-style jobs: hybrid elsewhere is out, remote abroad is out, US remote
   assert.equal(m.place('Bucharest', { remote: true, country: 'other' }), null);
   assert.equal(m.place('Remote', { remote: true, country: 'US' }), 'remote');
   assert.equal(m.place('San Francisco; Remote; Seattle', { remote: false, country: 'US' }), 'area');
+});
+
+test('requiredYears reads the smallest experience requirement and ignores the rest', () => {
+  assert.equal(requiredYears('- 3+ years of non-internship professional software development experience<br/>- 2+ years of design or architecture experience'), 2);
+  assert.equal(requiredYears('Are 18 years of age or older. 8+ years of software engineering experience.'), 8);
+  assert.equal(requiredYears('You have 5 years of experience programming in Java. Bonus: 10+ years in fintech.'), 5);
+  assert.equal(requiredYears('Five or more years of professional experience building web apps.'), 5);
+  assert.equal(requiredYears('Experience: 7-10 years in backend development.'), 7);
+  assert.equal(requiredYears('Founded 12 years ago, we have offices in 5 countries.'), null);
+  assert.equal(requiredYears(''), null);
+});
+
+test('filterJobs drops jobs that ask for more years than the limit', () => {
+  const s = { ...DEFAULT_SETTINGS, maxYearsRequired: 5 };
+  const job = (min_years) => ({ title: 'Senior Software Engineer', location: 'Remote - US', posted_at: null, min_years });
+  const allowSenior = { ...s, levelExclude: s.levelExclude.filter((w) => w !== 'senior') };
+  assert.equal(filterJobs([job(8)], allowSenior).length, 0);
+  assert.equal(filterJobs([job(5)], allowSenior).length, 1);
+  assert.equal(filterJobs([job(null)], allowSenior).length, 1);
 });
 
 test('filterJobs drops stale postings and marks remote', () => {

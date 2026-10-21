@@ -571,7 +571,8 @@ async function renderSettings() {
     }
   } },
   h('fieldset', {}, h('legend', {}, 'Goal and freshness'),
-    h('div', { class: 'grid' }, number('dailyGoal', 'Applications per day'), number('maxAgeDays', 'Only jobs posted in the last N days'))),
+    h('div', { class: 'grid' }, number('dailyGoal', 'Applications per day'), number('maxAgeDays', 'Only jobs posted in the last N days')),
+    h('div', { class: 'grid' }, number('maxYearsRequired', 'Skip jobs asking for more than N years of experience'))),
   h('fieldset', {}, h('legend', {}, 'Where'),
     h('label', { class: 'check' }, remote, 'Include remote jobs anywhere in the US'),
     lines('areas', 'Seattle-area places', 'One per line. Jobs whose location mentions one of these count as local.', 5)),

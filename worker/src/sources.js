@@ -1,5 +1,8 @@
-// Fetches job listings from the four sources and returns them in one shape:
-// { id, source, board, company, title, location, remote, country, url, apply_url, posted_at }
+// Fetches job listings from the sources and returns them in one shape:
+// { id, source, board, company, title, location, remote, country, url, apply_url, posted_at, min_years }
+// min_years (smallest experience requirement) is read here when the listing includes the description;
+// for Greenhouse it's read later, when the job's form is loaded.
+import { requiredYears } from './filters.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ApplyDesk/1.0 (+https://brandonskar.com/jobs)';
 
@@ -78,6 +81,7 @@ async function lever(board) {
     url: j.hostedUrl,
     apply_url: j.applyUrl,
     posted_at: j.createdAt ? new Date(j.createdAt).toISOString() : null,
+    min_years: requiredYears([j.descriptionPlain, ...(j.lists || []).map((l) => l.content), j.additionalPlain].join('. ')),
   }));
 }
 
@@ -99,6 +103,7 @@ async function ashby(board) {
       url: j.jobUrl,
       apply_url: j.applyUrl || `${j.jobUrl}/application`,
       posted_at: j.publishedAt || null,
+      min_years: requiredYears(j.descriptionPlain),
     };
   });
 }
@@ -120,6 +125,7 @@ async function amazon(q, loc) {
       url: `https://www.amazon.jobs${j.job_path}`,
       apply_url: j.url_next_step || `https://www.amazon.jobs${j.job_path}`,
       posted_at: Number.isNaN(posted) ? null : new Date(posted).toISOString(),
+      min_years: requiredYears(j.basic_qualifications),
     };
   });
 }

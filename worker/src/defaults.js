@@ -3,6 +3,8 @@
 export const DEFAULT_SETTINGS = {
   dailyGoal: 10,
   maxAgeDays: 30,
+  // Skip jobs whose every experience requirement is above this many years (from the job description).
+  maxYearsRequired: 5,
   remoteUS: true,
 
   // Regex fragments, matched case-insensitively against each part of a title
