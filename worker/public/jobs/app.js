@@ -96,9 +96,14 @@ async function loadState() {
     // A paused site (Amazon's 10-application limit): its jobs are held back until a spot opens.
     const pausedNotes = Object.entries(s.paused || {}).map(([site, p]) =>
       `${p.note} The helper checks again once a day${site === 'amazon' ? '; to free a spot sooner, withdraw an old application on Amazon’s Application Dashboard' : ''}.`);
+    // A company that caps applications per person: its other jobs wait until the hold ends.
+    const held = s.held || [];
+    const heldNote = held.length
+      ? `On hold (they limit applications per person): ${held.map((h) => `${h.company} until ${new Date(h.until).toLocaleDateString()}`).join(', ')}.`
+      : '';
     const text = codes === 1
       ? 'An application is waiting for the verification code the site emailed you.'
-      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : [s.alert?.text, ...pausedNotes].filter(Boolean).join(' ');
+      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : [s.alert?.text, ...pausedNotes, heldNote].filter(Boolean).join(' ');
     $('#alert').hidden = !text;
     $('#alert-text').textContent = text;
     $('#alert-go').hidden = !codes;

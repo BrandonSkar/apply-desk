@@ -11,14 +11,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
-import { enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
+import { companyLimit, enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
 import * as ashby from './fillers/ashby.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -107,6 +107,14 @@ async function finish(page, job, ok) {
   }
 }
 
+// The company caps applications per person: this one wasn't sent, and the site holds the company's jobs for a while.
+async function holdCompany(page, job, message) {
+  log(`  ${job.company} turned it away: “${message}”. Its jobs are on hold for 30 days.`);
+  await screenshot(page, job, 'limit');
+  await report(job.id, 'limited', message);
+  await page.close().catch(() => {});
+}
+
 // ---------- applications waiting on you ----------
 
 const waiting = new Map(); // job id -> { page, job, filler, until, needs, enteredAt }
@@ -125,6 +133,12 @@ async function checkWaiting() {
     if (await filler.isDone(page).catch(() => false)) {
       waiting.delete(id);
       await finish(page, job, true);
+      continue;
+    }
+    const limited = await companyLimit(page).catch(() => '');
+    if (limited) {
+      waiting.delete(id);
+      await holdCompany(page, job, limited);
       continue;
     }
     // A code prompt can also show up after you fix something by hand.
@@ -190,6 +204,7 @@ async function handle({ job, form, answers, prefs = {} }) {
       await report(job.id, 'needs_you', CODE_NOTE, 'code');
       return wait(page, job, filler, 'code');
     }
+    if (outcome.limit) return holdCompany(page, job, outcome.limit);
     // Record what the page shows, so an unexpected message can be diagnosed from the Sent tab.
     await screenshot(page, job, 'after-submit');
     const shown = outcome === 'unknown' ? await pageMessage(page) : '';

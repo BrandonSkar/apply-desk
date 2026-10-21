@@ -20,6 +20,16 @@ const manualWhere = (paused = {}) => {
   const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
   return open.length ? `(source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NULL)` : '(0)';
 };
+// A company that caps applications per person ("we are limiting applications to give everyone a chance") is held
+// this long: its jobs stay out of the queue, then come back on their own.
+const HOLD_MS = 30 * 24 * 60 * 60 * 1000;
+const holdKey = (source, board) => `${source}:${board || ''}`;
+const notHeld = (held = {}) => {
+  const keys = Object.keys(held);
+  return keys.length
+    ? ` AND (source || ':' || COALESCE(board, '')) NOT IN (${keys.map((k) => `'${k.replace(/'/g, "''")}'`).join(',')})`
+    : '';
+};
 // While paused, the helper tries one job from that site this often to see if a spot has opened.
 const PAUSE_RECHECK_MS = 24 * 60 * 60 * 1000;
 // How many prepared-but-unanswered jobs to keep ready per site. Opening an Amazon application leaves it in progress there.
@@ -116,10 +126,11 @@ async function state(env, since) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const paused = await getKV(env, 'paused', {});
+  const held = await getHolds(env);
   const row = await env.DB.prepare(
     `SELECT
-       SUM(status = 'new' AND ${autoWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_auto,
-       SUM(status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_manual,
+       SUM(status = 'new' AND ${autoWhere(paused)}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_auto,
+       SUM(status = 'new' AND ${manualWhere(paused)}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_manual,
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
@@ -138,6 +149,7 @@ async function state(env, since) {
     refresh: await getKV(env, 'refresh', null),
     alert: await getKV(env, 'alert', null),
     paused,
+    held: Object.values(held).map(({ company, until }) => ({ company, until })),
     profileReady: !!(profile.first_name && profile.last_name && profile.email && profile.phone),
   };
 }
@@ -148,7 +160,7 @@ async function next(env, lane) {
   const paused = await getKV(env, 'paused', {});
   const maxYears = settings.maxYearsRequired || 99;
   const pick = env.DB.prepare(
-    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}
+    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}${notHeld(await getHolds(env))}
        AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2)
      ORDER BY later ASC, posted_at DESC LIMIT 1`,
   ).bind(fresh, maxYears);
@@ -197,7 +209,7 @@ async function list(env, view) {
     const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
     const paused = await getKV(env, 'paused', {});
     const { results } = await env.DB.prepare(
-      `SELECT * FROM jobs WHERE status = 'new' AND ${manualWhere(paused)} AND (posted_at IS NULL OR posted_at >= ?)
+      `SELECT * FROM jobs WHERE status = 'new' AND ${manualWhere(paused)}${notHeld(await getHolds(env))} AND (posted_at IS NULL OR posted_at >= ?)
        ORDER BY posted_at DESC LIMIT 150`,
     ).bind(fresh).all();
     return { jobs: results.map(publicJob) };
@@ -304,6 +316,7 @@ async function claim(env, body) {
 }
 
 async function runnerResult(env, body) {
+  if (body.status === 'limited') return holdCompany(env, body);
   // 'new' puts a job back in the queue (e.g. the site was at its application limit); your answers are kept.
   const allowed = ['submitted', 'needs_you', 'failed', 'ready', 'new'];
   if (!allowed.includes(body.status)) return json({ error: 'Unknown status.' }, 400);
@@ -320,6 +333,32 @@ async function runnerResult(env, body) {
   ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, body.status === 'new' ? 1 : 0, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
   return json({ ok: true });
+}
+
+// The company turned the application away because it caps applications per person. The job goes back in the
+// queue and the company's jobs (this one included) are held until the cap has likely reset.
+async function holdCompany(env, body) {
+  const id = String(body.id);
+  const job = await env.DB.prepare(`SELECT * FROM jobs WHERE id = ? AND status IN ('submitting', 'needs_you')`).bind(id).first();
+  if (!job) return json({ ok: true });
+  const t = now();
+  const until = new Date(Date.now() + HOLD_MS).toISOString();
+  const why = `Not sent: ${job.company} limits how many of its jobs one person can apply to. Its jobs are on hold until ${until.slice(0, 10)}.`;
+  // Answered-but-unsent jobs from the company would hit the same wall.
+  await env.DB.prepare(`UPDATE jobs SET status = 'new', note = ?, needs = NULL, code = NULL, sent_at = NULL, updated_at = ?
+    WHERE source = ? AND COALESCE(board, '') = ? AND (id = ? OR status = 'ready')`)
+    .bind(why, t, job.source, job.board || '', id).run();
+  const held = await getHolds(env);
+  held[holdKey(job.source, job.board)] = { company: job.company, since: t, until, note: String(body.note || '').slice(0, 300) };
+  await setKV(env, 'held', held);
+  await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
+  return json({ ok: true, held: { company: job.company, until } });
+}
+
+// Active company holds; expired ones drop off.
+async function getHolds(env) {
+  const t = now();
+  return Object.fromEntries(Object.entries(await getKV(env, 'held', {})).filter(([, h]) => h.until > t));
 }
 
 // Amazon and Microsoft: the helper reads a job's questions while you're signed in. Keeps a few ready per site.

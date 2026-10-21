@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/helper.js",
     "login": "node src/helper.js --login",
-    "mcp": "node src/mcp.js"
+    "mcp": "node src/mcp.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

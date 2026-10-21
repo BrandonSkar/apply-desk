@@ -34,6 +34,78 @@ export async function pickCombo(page, input, label, { search = false } = {}) {
   await options.nth(i).click();
 }
 
+const STATES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut',
+  DE: 'Delaware', DC: 'District of Columbia', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois',
+  IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana',
+  NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York',
+  NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania',
+  RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah',
+  VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+};
+
+// How well a suggestion matches "City, ST": 3 = the city, 2 = the state, 1 = the country, 0 = somewhere else.
+export function locationRank(option, value) {
+  const [city = '', st = ''] = String(value).split(',').map((s) => s.trim());
+  const state = STATES[st.toUpperCase()] || st;
+  const t = option.trim();
+  const word = (w) => w && new RegExp(`(^|[\\s,])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([\\s,]|$)`, 'i').test(t);
+  const starts = (w) => w && t.toLowerCase().startsWith(w.toLowerCase());
+  if (starts(city) && (!st || word(state) || word(st))) return 3;
+  // The state itself ("Washington, United States"), not a place named after it ("Washington, District of Columbia").
+  if (state && new RegExp(`^${state}(,\\s*(united states( of america)?|usa?))?$`, 'i').test(t)) return 2;
+  if (/^(united states( of america)?|usa?)$/i.test(t)) return 1;
+  return 0;
+}
+
+// The suggestions once they stop changing. Lists refresh per keystroke and go empty ("Loading...") in between,
+// so only a non-empty list that holds steady for about a second counts.
+async function settledTexts(options, timeoutMs = 10_000) {
+  const end = Date.now() + timeoutMs;
+  let prev = '';
+  let steady = 0;
+  let texts = [];
+  while (Date.now() < end) {
+    texts = (await options.allInnerTexts().catch(() => [])).map((t) => t.trim()).filter(Boolean);
+    const key = texts.join('\n');
+    steady = key && key === prev ? steady + 1 : 0;
+    if (steady >= 3) return texts;
+    prev = key;
+    await sleep(350);
+  }
+  return texts;
+}
+
+// Location boxes suggest places as you type, and the first suggestion isn't always yours: a box that only knows
+// regions answers "Auburn, WA" with "Wales, United Kingdom". Take the closest real match (city, then state, then
+// country), or stop and leave it to you.
+export async function pickLocation(input, value, options) {
+  const state = STATES[(String(value).split(',')[1] || '').trim().toUpperCase()];
+  for (const text of [String(value), state, 'United States'].filter(Boolean)) {
+    // A box that's still loading can drop the first keystrokes ("uburn, WA"); type again until it holds the text.
+    for (let i = 0; i < 3; i++) {
+      await input.click();
+      await input.fill('');
+      await input.pressSequentially(text, { delay: 25 });
+      if ((await input.inputValue().catch(() => text)) === text) break;
+      await sleep(700);
+    }
+    const texts = await settledTexts(options);
+    let best = -1;
+    let bestRank = 0;
+    texts.forEach((t, i) => {
+      const r = locationRank(t, value);
+      if (r > bestRank) [best, bestRank] = [i, r];
+    });
+    if (best >= 0) {
+      await options.nth(best).click();
+      return texts[best];
+    }
+  }
+  throw new Error(`no suggestion matched "${value}"`);
+}
+
 // Check the radio/checkbox inputs named `name` whose value is in `values`.
 export async function checkValues(page, name, values) {
   const found = await page.locator(`input${byName(name)}`).evaluateAll((els, wanted) => {
@@ -97,7 +169,16 @@ export async function enterCode(page, code) {
   await page.locator('button[type=submit]:visible, button:visible', { hasText: /submit|verify|confirm/i }).first().click();
 }
 
-// After clicking Submit: watch for success, a code prompt, a CAPTCHA challenge, or form errors.
+// "We are limiting applications to give everyone a chance", "maximum number of applications": the company caps
+// how many of its jobs one person can apply to.
+export const COMPANY_LIMIT = /limiting applications|maximum number of (job )?applications|reached the (maximum|limit)|application limit|limit of \d+ (job )?applications|too many applications/i;
+
+export async function companyLimit(page) {
+  const el = page.getByText(COMPANY_LIMIT).first();
+  return (await el.isVisible().catch(() => false)) ? (await el.innerText()).trim().slice(0, 200) : '';
+}
+
+// After clicking Submit: watch for success, a code prompt, a company limit, a CAPTCHA challenge, or form errors.
 export async function waitOutcome(page, { isDone, captcha, errors }, timeoutMs = 45_000) {
   const end = Date.now() + timeoutMs;
   const start = Date.now();
@@ -105,6 +186,8 @@ export async function waitOutcome(page, { isDone, captcha, errors }, timeoutMs =
     if (page.isClosed()) return 'unknown';
     if (await isDone(page).catch(() => false)) return 'submitted';
     if (await needsCode(page).catch(() => false)) return 'code';
+    const limited = await companyLimit(page).catch(() => '');
+    if (limited) return { limit: limited };
     if (await captcha(page).catch(() => false)) return 'captcha';
     if (Date.now() - start > 4000) {
       const errs = await errors(page).catch(() => []);

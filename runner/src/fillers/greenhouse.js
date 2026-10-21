@@ -1,7 +1,7 @@
 // Fills Greenhouse application forms (job-boards.greenhouse.io). Field ids match the question names from
 // Greenhouse's public API: text fields are inputs, single choices are searchable dropdowns, multi choices
 // are checkboxes, demographic questions use the question id.
-import { byId, checkValues, isEmpty, pickCombo, visibleTexts, waitOutcome } from './common.js';
+import { byId, checkValues, isEmpty, pickCombo, pickLocation, visibleTexts, waitOutcome } from './common.js';
 
 export async function fill(page, { form, answers, resumePath, prefs = {} }) {
   await page.locator('#first_name').waitFor({ timeout: 45_000 });
@@ -33,7 +33,8 @@ export async function fill(page, { form, answers, resumePath, prefs = {} }) {
         continue;
       }
       if (q.kind === 'location') {
-        await pickCombo(page, page.locator('#candidate-location'), String(v), { search: true });
+        await pickLocation(page.locator('#candidate-location'), v,
+          page.locator('[id^="react-select-candidate-location"][id$="listbox"] [role="option"]'));
         continue;
       }
       const id = q.domId || q.name;
