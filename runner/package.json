@@ -5,7 +5,7 @@
   "description": "Runs on your PC: submits the applications you answered on the Apply Desk page, and serves the Apply Desk MCP server for Claude.",
   "type": "module",
   "scripts": {
-    "start": "node src/helper.js",
+    "start": "node src/run.js",
     "login": "node src/helper.js --login",
     "mcp": "node src/mcp.js",
     "test": "node --test"

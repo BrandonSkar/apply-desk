@@ -1,11 +1,12 @@
 // Apply Desk: the /jobs page, its API, the scheduled job refresh, and the endpoints the PC helper polls.
 import { DEFAULT_SETTINGS, EMPTY_PROFILE, PROFILE_FIELDS } from './defaults.js';
 import { buildTasks, runTask } from './sources.js';
-import { filterJobs, requiredYears } from './filters.js';
+import { filterJobs, postedLimit, requiredYears } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
-import { autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
+import { autoAnswers, autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 import { draftable, draftAnswers } from './drafts.js';
+import { dailySummary, email, localDay, PAGE_URL } from './notify.js';
 
 const AUTO_SOURCES = ['greenhouse', 'lever', 'ashby', 'amazon', 'microsoft'];
 // Greenhouse and Lever forms come from public APIs. Amazon's and Microsoft's need your login, so the helper
@@ -55,6 +56,7 @@ export default {
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(refreshSlice(env));
     ctx.waitUntil(draftAhead(env, '', { loadForms: false }).catch((err) => console.error('draftAhead', err)));
+    ctx.waitUntil(eveningSummary(env).catch((err) => console.error('summary', err)));
   },
 };
 
@@ -113,9 +115,12 @@ async function api(request, env, path, url, ctx) {
     await setPaused(env, String(body.source || ''), body.paused === true, body.note);
     return json({ ok: true, paused: await getKV(env, 'paused', {}) });
   }
+  if (path === '/runner/autosend' && method === 'POST') return json(await autoSendNext(env));
+  if (path === '/holds/release' && method === 'POST') return json(await releaseHold(env, String(body.key || '')));
+  if (path === '/notify/test' && method === 'POST') return json(await eveningSummary(env, { force: true, only: body.only }));
   if (path === '/runner/heartbeat' && method === 'POST') {
     await setKV(env, 'runner', { seen: now(), ...pickRunnerInfo(body) });
-    return json({ ok: true });
+    return json({ ok: true, outbox: /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env) });
   }
 
   const m = /^\/jobs\/([^/]+)\/(answers|status|code)$/.exec(path);
@@ -156,7 +161,7 @@ async function state(env, since) {
     refresh: await getKV(env, 'refresh', null),
     alert: await getKV(env, 'alert', null),
     paused,
-    held: Object.values(held).map(({ company, until }) => ({ company, until })),
+    held: Object.entries(held).map(([key, { company, until, reason }]) => ({ key, company, until, reason: reason || 'their limit' })),
     profileReady: !!(profile.first_name && profile.last_name && profile.email && profile.phone),
   };
 }
@@ -206,18 +211,21 @@ async function ensureForm(env, job, maxYears) {
 }
 
 async function next(env, lane) {
-  const maxYears = (await getSettings(env)).maxYearsRequired || 99;
-  const pick = await queueQuery(env, lane, 1);
-  // Jobs that drop out while their form loads (closed, over the years limit) make way for the next one.
+  const settings = await getSettings(env);
+  const maxYears = settings.maxYearsRequired || 99;
+  // Jobs that drop out while their form loads (closed, over the years limit, a company at its limit) make way
+  // for the next one.
   for (let tries = 0; tries < 12; tries++) {
-    const job = await pick.first();
+    const job = await (await queueQuery(env, lane, 1)).first();
     if (!job) return { job: null };
     if (lane === 'manual') return { job: publicJob(job) };
     const form = await ensureForm(env, job, maxYears);
-    if (!form) continue;
+    if (!form || (await capReached(env, job, form, settings))) continue;
     const profile = await getProfile(env);
     const fill = autofill(form, profile, await getBank(env), job.company);
     await withDrafts(env, job, form, fill, profile);
+    // Auto-send leaves the job on your screen to you.
+    await setKV(env, 'showing', { id: job.id, at: now() });
     return { job: publicJob(job), form, fill };
   }
   return { job: null, note: 'Several forms failed to load in a row. Try again in a minute.' };
@@ -286,14 +294,15 @@ async function writeDrafts(env, job, form, profile, questions) {
 // whose form is already loaded, keeping its work small.
 async function draftAhead(env, currentId = '', { loadForms = true } = {}) {
   if (!env.ANTHROPIC_API_KEY) return;
-  const maxYears = (await getSettings(env)).maxYearsRequired || 99;
+  const settings = await getSettings(env);
+  const maxYears = settings.maxYearsRequired || 99;
   const { results } = await (await queueQuery(env, 'auto', DRAFT_AHEAD, currentId)).all();
   const profile = await getProfile(env);
   const bank = await getBank(env);
   await Promise.all(results.map(async (job) => {
     if (job.drafts || (!loadForms && !job.form)) return;
     const form = await ensureForm(env, job, maxYears);
-    if (!form) return;
+    if (!form || (await capReached(env, job, form, settings))) return;
     const questions = draftable(form, autofill(form, profile, bank, job.company));
     if (questions.length) await makeDrafts(env, job, form, profile, questions, false);
   }));
@@ -321,6 +330,8 @@ async function saveAnswers(env, id, body) {
   const job = await env.DB.prepare('SELECT * FROM jobs WHERE id = ?').bind(id).first();
   if (!job) return json({ error: 'No such job.' }, 404);
   if (!AUTO_SOURCES.includes(job.source) || !job.form) return json({ error: 'This job has no form to fill.' }, 400);
+  // Sending it twice would submit it twice (e.g. auto-send got to it while it sat open on your page).
+  if (job.status !== 'new') return json({ error: 'This application was already sent. It’s on the Sent tab.' }, 409);
 
   const form = JSON.parse(job.form);
   const fill = autofill(form, await getProfile(env), await getBank(env), job.company);
@@ -337,7 +348,7 @@ async function saveAnswers(env, id, body) {
 
   const t = now();
   const writes = [
-    env.DB.prepare(`UPDATE jobs SET answers = ?, status = 'ready', note = NULL, sent_at = ?, updated_at = ? WHERE id = ?`)
+    env.DB.prepare(`UPDATE jobs SET answers = ?, status = 'ready', note = NULL, sent_at = ?, updated_at = ? WHERE id = ? AND status = 'new'`)
       .bind(JSON.stringify(answers), t, t, id),
   ];
   // Remember answers to questions that will come up again at other companies.
@@ -389,12 +400,15 @@ async function claim(env, body) {
   await env.DB.prepare(`UPDATE jobs SET status = 'ready', note = 'Retrying: the helper stopped mid-submit' WHERE status = 'submitting' AND updated_at < ?`)
     .bind(stale).run();
 
+  // Phone pushes waiting to go out; the helper sends them (from 0.7 on; older ones would drop them).
+  const outbox = /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env);
   const job = await env.DB.prepare(`SELECT * FROM jobs WHERE status = 'ready' ORDER BY updated_at ASC LIMIT 1`).first();
-  if (!job) return { job: null };
+  if (!job) return { job: null, outbox };
   const r = await env.DB.prepare(`UPDATE jobs SET status = 'submitting', updated_at = ? WHERE id = ? AND status = 'ready'`).bind(t, job.id).run();
-  if (!r.meta.changes) return { job: null };
+  if (!r.meta.changes) return { job: null, outbox };
   const profile = await getProfile(env);
   return {
+    outbox,
     job: { ...publicJob(job), apply_url: job.apply_url, board: job.board },
     form: JSON.parse(job.form),
     answers: JSON.parse(job.answers),
@@ -428,7 +442,41 @@ async function runnerResult(env, body) {
      WHERE id = ? AND status IN ('submitting', 'needs_you')`,
   ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, body.status === 'new' ? 1 : 0, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
+  if (body.status === 'needs_you') await alertPhone(env, String(body.id), needs, note);
   return json({ ok: true });
+}
+
+// Phone pushes go out through the helper on your PC (ntfy turns away Cloudflare's shared addresses). They wait
+// here until its next check-in, a few seconds while it runs; ones older than 6 hours are dropped.
+const OUTBOX_MAX_AGE_MS = 6 * 3600_000;
+async function queuePush(env, settings, msg) {
+  if (!settings.notifyTopic) return { ok: false, why: 'No phone topic set' };
+  const fresh = (await getKV(env, 'outbox', [])).filter((m) => Date.now() - Date.parse(m.at) < OUTBOX_MAX_AGE_MS);
+  fresh.push({ topic: settings.notifyTopic, click: PAGE_URL, priority: 3, tags: [], ...msg, at: now() });
+  await setKV(env, 'outbox', fresh.slice(-20));
+  const runner = await getKV(env, 'runner', null);
+  return runner && Date.now() - Date.parse(runner.seen) < 2 * 60_000
+    ? { ok: true }
+    : { ok: false, why: 'queued: it goes out once the helper is running' };
+}
+
+async function takeOutbox(env) {
+  const outbox = await getKV(env, 'outbox', []);
+  if (!outbox.length) return [];
+  await setKV(env, 'outbox', []);
+  return outbox.filter((m) => Date.now() - Date.parse(m.at) < OUTBOX_MAX_AGE_MS);
+}
+
+// An application waiting on you: a push to your phone, so an emailed code gets entered before it expires.
+async function alertPhone(env, id, needs, note) {
+  const settings = await getSettings(env);
+  if (!settings.notifyTopic || settings.pushNeedsYou === false) return;
+  const job = await env.DB.prepare('SELECT company, title FROM jobs WHERE id = ?').bind(id).first();
+  if (!job) return;
+  await queuePush(env, settings, needs === 'code'
+    ? { title: `Code needed: ${job.company}`, message: `${job.company} emailed you a verification code for ${job.title}. Enter it on Apply Desk (Sent tab) within 30 minutes.`, priority: 5, tags: ['key'] }
+    : { title: `${job.company} needs you`, message: `${job.title}: ${String(note || 'It needs you to finish it.').slice(0, 300)}`, priority: 4, tags: ['warning'] },
+  ).catch((err) => console.error('push', err));
 }
 
 // The company turned the application away because it caps applications per person. The job goes back in the
@@ -444,9 +492,7 @@ async function holdCompany(env, body) {
   await env.DB.prepare(`UPDATE jobs SET status = 'new', note = ?, needs = NULL, code = NULL, sent_at = NULL, updated_at = ?
     WHERE source = ? AND COALESCE(board, '') = ? AND (id = ? OR status = 'ready')`)
     .bind(why, t, job.source, job.board || '', id).run();
-  const held = await getHolds(env);
-  held[holdKey(job.source, job.board)] = { company: job.company, since: t, until, note: String(body.note || '').slice(0, 300) };
-  await setKV(env, 'held', held);
+  await addHold(env, job, until, 'their limit', body.note);
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
   return json({ ok: true, held: { company: job.company, until } });
 }
@@ -456,6 +502,130 @@ async function getHolds(env) {
   const t = now();
   return Object.fromEntries(Object.entries(await getKV(env, 'held', {})).filter(([, h]) => h.until > t));
 }
+
+async function addHold(env, job, until, reason, note = '') {
+  const held = await getHolds(env);
+  held[holdKey(job.source, job.board)] = { company: job.company, since: now(), until, reason, note: String(note || '').slice(0, 300) };
+  await setKV(env, 'held', held);
+}
+
+// Settings → "Companies on hold" → Release: the company's jobs come back right away.
+async function releaseHold(env, key) {
+  const held = await getHolds(env);
+  if (!held[key]) return { ok: false, error: 'That company isn’t on hold.' };
+  delete held[key];
+  await setKV(env, 'held', held);
+  return { ok: true };
+}
+
+// Company limits: the company's own, when its posting states one ("a maximum of 5 applications within a 6 month
+// period"), and yours from Settings (Amazon and Microsoft are left to their own site limits). Reaching one holds
+// the company until its oldest counted application ages out.
+async function capReached(env, job, form, settings) {
+  const limits = [];
+  const posted = postedLimit(form?.description);
+  if (posted) limits.push({ ...posted, reason: `their limit: ${posted.max} per ${posted.label}` });
+  if (settings.companyCap > 0 && !SIGNED_IN_SOURCES.includes(job.source)) {
+    limits.push({ max: settings.companyCap, days: settings.companyCapDays, reason: `your limit: ${settings.companyCap} per ${settings.companyCapDays} days` });
+  }
+  for (const l of limits) {
+    const since = new Date(Date.now() - l.days * 864e5).toISOString();
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) AS n, MIN(COALESCE(submitted_at, sent_at)) AS oldest FROM jobs
+       WHERE source = ? AND COALESCE(board, '') = ? AND status IN ('ready', 'submitting', 'needs_you', 'submitted', 'applied_manual')
+         AND COALESCE(submitted_at, sent_at) >= ?`,
+    ).bind(job.source, job.board || '', since).first();
+    if (row.n >= l.max) {
+      await addHold(env, job, new Date(Date.parse(row.oldest) + l.days * 864e5).toISOString(), l.reason);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Settings → "Send automatically": an application whose every required question is answered from your profile
+// and past answers goes to the helper without you, up to a daily limit. The job open on your page is left to you.
+// Walks the queue a few jobs per call (the helper calls about once a minute while idle).
+const AUTOSEND_BATCH = 6;
+async function autoSendNext(env) {
+  const settings = await getSettings(env);
+  if (!settings.autoSend) return { job: null };
+  const day = new Date(Date.now() - 864e5).toISOString();
+  const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM jobs WHERE sent_at >= ?').bind(day).first();
+  if (n >= settings.autoSendPerDay) return { job: null, note: 'Daily auto-send limit reached' };
+  const showing = await getKV(env, 'showing', null);
+  const skip = showing && Date.now() - Date.parse(showing.at) < 30 * 60_000 ? showing.id : '';
+  const cursor = await getKV(env, 'autosendCursor', 0);
+  const { results } = await (await queueQuery(env, 'auto', AUTOSEND_BATCH + cursor, skip)).all();
+  const batch = results.slice(cursor);
+  await setKV(env, 'autosendCursor', batch.length < AUTOSEND_BATCH ? 0 : cursor + AUTOSEND_BATCH);
+  const profile = await getProfile(env);
+  const bank = await getBank(env);
+  for (const job of batch) {
+    const form = await ensureForm(env, job, settings.maxYearsRequired || 99);
+    if (!form || (await capReached(env, job, form, settings))) continue;
+    const answers = autoAnswers(form, autofill(form, profile, bank, job.company));
+    if (!answers) continue;
+    const t = now();
+    const r = await env.DB.prepare(
+      `UPDATE jobs SET answers = ?, status = 'ready', note = 'Sent automatically: everything was answered from your profile and past answers.',
+         sent_at = ?, updated_at = ? WHERE id = ? AND status = 'new'`,
+    ).bind(JSON.stringify(answers), t, t, job.id).run();
+    if (r.meta.changes) return { job: publicJob(job) };
+  }
+  return { job: null };
+}
+
+// ---------- evening summary ----------
+
+// Once a day, at your summary hour: an email going over the day and a push to your phone. Settings → "Send
+// today's summary now" forces it (`only`: 'phone' or 'email' to test one).
+async function eveningSummary(env, { force = false, only } = {}) {
+  const settings = await getSettings(env);
+  const day = localDay(settings.timeZone);
+  if (!force && (day.hour < settings.summaryHour || (await getKV(env, 'summaryDay', '')) === day.date)) return null;
+  if (!force) await setKV(env, 'summaryDay', day.date);
+  const summary = dailySummary(await dayInReview(env, settings, day));
+  const profile = await getProfile(env);
+  const [mail, phone] = await Promise.all([
+    only === 'phone' ? { ok: false, why: 'skipped' }
+      : settings.summaryEmail ? email(env, { to: profile.email, subject: summary.subject, text: summary.text, html: summary.html }) : { ok: false, why: 'Email summary is off' },
+    only === 'email' ? { ok: false, why: 'skipped' }
+      : settings.summaryPush ? queuePush(env, settings, { title: summary.pushTitle, message: summary.pushMessage, tags: ['clipboard'] }) : { ok: false, why: 'Phone summary is off' },
+  ]);
+  return { mail, phone };
+}
+
+async function dayInReview(env, settings, day) {
+  const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
+  const paused = await getKV(env, 'paused', {});
+  const held = await getHolds(env);
+  const [sent, needsYou, counts] = await Promise.all([
+    env.DB.prepare(`SELECT company, title, status FROM jobs WHERE sent_at >= ? ORDER BY sent_at`).bind(day.start).all(),
+    env.DB.prepare(`SELECT company, title, needs, note FROM jobs WHERE status IN ('needs_you', 'failed') ORDER BY updated_at`).all(),
+    env.DB.prepare(
+      `SELECT SUM(status = 'new' AND ${autoWhere(paused)}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2)) AS queue,
+              SUM(found_at >= ?3) AS found,
+              SUM(status IN ('submitted', 'applied_manual')) AS total
+       FROM jobs`,
+    ).bind(fresh, settings.maxYearsRequired || 99, day.start).first(),
+  ]);
+  return {
+    label: day.label,
+    goal: settings.dailyGoal,
+    sent: sent.results,
+    needsYou: needsYou.results,
+    queue: counts.queue || 0,
+    found: counts.found || 0,
+    total: counts.total || 0,
+    holds: Object.values(held).map((h) => ({
+      company: h.company,
+      reason: h.reason || 'their limit',
+      untilLabel: new Date(h.until).toLocaleDateString('en-US', { timeZone: settings.timeZone, month: 'short', day: 'numeric' }),
+    })),
+  };
+}
+
 
 // Amazon and Microsoft: the helper reads a job's questions while you're signed in. Keeps a few ready per site.
 async function claimPrepare(env) {
@@ -645,6 +815,22 @@ async function saveSettings(env, body) {
   s.maxAgeDays = num(body.maxAgeDays, 1, 120, s.maxAgeDays);
   s.maxYearsRequired = num(body.maxYearsRequired, 1, 30, s.maxYearsRequired);
   s.remoteUS = body.remoteUS !== false;
+  s.autoSend = body.autoSend === true;
+  s.autoSendPerDay = num(body.autoSendPerDay, 1, 200, s.autoSendPerDay);
+  s.companyCap = num(body.companyCap, 0, 50, s.companyCap);
+  s.companyCapDays = num(body.companyCapDays, 1, 365, s.companyCapDays);
+  for (const k of ['pushNeedsYou', 'summaryPush', 'summaryEmail']) s[k] = body[k] !== false;
+  s.summaryHour = num(body.summaryHour, 0, 23, s.summaryHour);
+  try {
+    s.timeZone = new Intl.DateTimeFormat('en-US', { timeZone: String(body.timeZone || s.timeZone) }).resolvedOptions().timeZone;
+  } catch {
+    return json({ error: `Unknown time zone: ${body.timeZone}` }, 400);
+  }
+  // A long random topic: anyone who knows it can read your pushes, so it isn't guessable.
+  const topic = String(body.notifyTopic || '').trim();
+  s.notifyTopic = /^[A-Za-z0-9_-]{12,64}$/.test(topic)
+    ? topic
+    : `applydesk-${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
   for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas', 'greenhouse', 'lever', 'ashby']) {
     const v = strings(body[k]);
     if (v) s[k] = v;

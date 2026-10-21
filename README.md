@@ -61,10 +61,16 @@ npm run db:init                          # create the tables (older databases: r
 npx wrangler secret put APP_PASSWORD     # the page password
 npx wrangler secret put SESSION_SECRET   # any long random string
 npx wrangler secret put RUNNER_TOKEN     # another long random string, for the helper and MCP server
+npx wrangler secret put ANTHROPIC_API_KEY  # optional: Claude drafts answers to questions nothing else answers
 npm run deploy
 ```
 
 Open `https://your-domain/jobs`, sign in, and fill in the **Profile** tab.
+
+Optional, for the evening summary email: turn on Email Routing for your domain and verify the address it goes to
+(`npx wrangler email routing enable your-domain`, `npx wrangler email routing addresses create you@example.com`),
+and set `MAIL_FROM` in `wrangler.jsonc` to an address on your domain. Phone notifications use the free
+[ntfy](https://ntfy.sh) app: subscribe to the topic shown under **Settings → Notifications**.
 
 **2. The helper** (`runner/`)
 
@@ -75,7 +81,9 @@ copy config.example.json config.local.json   # then fill in siteUrl, token (RUNN
 npm start
 ```
 
-Leave it running while you apply. `npm run login` opens the helper's browser so you can sign in to job sites it should use.
+Leave it running while you apply. It restarts itself to load code updates (between applications, never with one
+waiting on you), and it sends the phone notifications. `npm run login` opens the helper's browser so you can sign
+in to job sites it should use.
 
 **3. The MCP server** (optional)
 
@@ -100,6 +108,7 @@ Tools: `next_job`, `send_answers`, `skip_job`, `mark_applied`, `enter_code`, `li
 
 ```sh
 cd worker && npm test
+cd runner && npm test
 ```
 
 Unit tests cover the title and location filters and the autofill rules, using question sets modeled on real Greenhouse and Lever forms.

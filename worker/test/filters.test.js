@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeMatcher, filterJobs, requiredYears } from '../src/filters.js';
+import { makeMatcher, filterJobs, postedLimit, requiredYears } from '../src/filters.js';
 import { DEFAULT_SETTINGS } from '../src/defaults.js';
 
 const m = makeMatcher(DEFAULT_SETTINGS);
@@ -94,4 +94,16 @@ test('filterJobs drops stale postings and marks remote', () => {
   assert.equal(kept.length, 2);
   assert.equal(kept[0].remote, 1);
   assert.equal(kept[1].remote, 0);
+});
+
+test('postedLimit reads a company’s own cap on applications', () => {
+  assert.deepEqual(postedLimit('Application Limit: Candidates may submit a maximum of 5 applications within a 6 month period.'),
+    { max: 5, days: 183, label: '6 months' });
+  assert.deepEqual(postedLimit('You may apply to up to 3 roles in a 30-day period.'), { max: 3, days: 30, label: '30 days' });
+  assert.deepEqual(postedLimit('Candidates can apply for a maximum of three positions per year.'), { max: 3, days: 365, label: '1 year' });
+  assert.deepEqual(postedLimit('Please submit no more than 2 applications within any rolling 12-month period.'), { max: 2, days: 366, label: '12 months' });
+  for (const none of ['We review a maximum of applications each week.', 'Up to 5 years of experience within a fast-paced team.',
+    'Our team reviews applications within 2 weeks.', '']) {
+    assert.equal(postedLimit(none), null, none);
+  }
 });

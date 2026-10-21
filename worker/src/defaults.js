@@ -7,6 +7,23 @@ export const DEFAULT_SETTINGS = {
   maxYearsRequired: 5,
   remoteUS: true,
 
+  // Send an application without you when every required question is answered from your profile or past answers.
+  autoSend: false,
+  autoSendPerDay: 40,
+  // At most this many applications to one company in this many days (0 = no limit). A company's own posted
+  // limit ("a maximum of 5 applications within a 6 month period") applies either way.
+  companyCap: 5,
+  companyCapDays: 30,
+
+  // Phone pushes go to this ntfy topic (made up when settings are first saved); the summary goes out daily at
+  // summaryHour in timeZone.
+  notifyTopic: '',
+  pushNeedsYou: true,
+  summaryPush: true,
+  summaryEmail: true,
+  summaryHour: 20,
+  timeZone: 'America/Los_Angeles',
+
   // Regex fragments, matched case-insensitively against each part of a title
   // ("Software Engineer II / Senior Software Engineer" is checked part by part).
   titleInclude: [

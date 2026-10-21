@@ -410,6 +410,23 @@ export function autofill(form, profile, bank = new Map(), company = '') {
 }
 
 // The required questions that still have no answer.
+// The answers to send without you, or null when the application needs you: a required question that isn't
+// answered from your profile or a past answer (best guesses and Claude's drafts count as needing you), or a file.
+export function autoAnswers(form, fill) {
+  const answers = {};
+  for (const q of form.questions) {
+    const v = fill.values[q.name];
+    const has = !(v == null || v === '' || (Array.isArray(v) && v.length === 0));
+    if (q.type === 'file' && q.kind !== 'resume') {
+      if (q.required) return null;
+      continue;
+    }
+    if (fill.bucket[q.name] === 'auto' && has) answers[q.name] = v;
+    else if (q.required) return null;
+  }
+  return missingRequired(form, answers).length ? null : answers;
+}
+
 export function missingRequired(form, answers) {
   return (form?.questions || []).filter((q) => {
     if (!q.required || q.kind === 'resume') return false;

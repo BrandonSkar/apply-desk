@@ -1,14 +1,15 @@
 // The Apply Desk helper. Leave it running on your PC: it picks up the applications you sent from the
 // page, fills them in a Chrome window it controls, submits them, and reports back.
 //
-//   npm start          run the helper
+//   npm start          run the helper (it restarts itself, between applications, when its code is updated)
 //   npm run login      open the helper's browser so you can sign in to job sites, then close it
 //
 // When an application needs you (an emailed code, a CAPTCHA, a missing answer), its tab stays open and
 // the helper keeps going with the rest of the queue, checking back on the waiting tabs as it goes.
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
 import { companyLimit, enterCode, limitTexts, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
@@ -18,7 +19,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.6.3';
+const VERSION = '0.7.0';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -27,6 +28,11 @@ const POLL_MS = 15_000;
 const WAIT_FOR_YOU_MS = 30 * 60_000;
 const MAX_WAITING = 5;
 const CODE_NOTE = 'The site emailed you a verification code. Enter it on the page (Sent tab) or in the helper window.';
+// Settings → "Send automatically": while idle, ask the site for an application with nothing new to answer.
+const AUTOSEND_EVERY_MS = 60_000;
+const UPDATE_CHECK_MS = 60_000;
+const RESTART_CODE = 75; // run.js starts the helper again
+const SUPERVISED = process.env.APPLY_DESK_SUPERVISED === '1';
 
 const cfg = loadConfig();
 const api = makeApi(cfg);
@@ -78,6 +84,58 @@ context.on('close', () => {
 
 const report = (id, status, note, needs = null) =>
   api('/runner/result', { method: 'POST', body: { id, status, note, needs, ...info } }).catch((err) => log('Could not report back:', err.message));
+
+// An application needs you: a beep here, and for an emailed code (which expires) its tab comes to the front.
+// The site also pushes it to your phone.
+function callYou(page, urgent = false) {
+  process.stdout.write('\u0007');
+  if (urgent) page.bringToFront().catch(() => {});
+}
+
+// Phone pushes the site queued (a code needed, the evening summary). They go out from this PC: ntfy turns away
+// requests from Cloudflare's shared addresses.
+async function deliver(outbox = []) {
+  for (const { at, ...msg } of outbox) {
+    const r = await fetch('https://ntfy.sh/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...msg, message: String(msg.message || '').slice(0, 3800) }),
+    }).catch((err) => ({ ok: false, status: err.message }));
+    if (!r.ok) log(`Couldn’t send a phone notification (${r.status}): ${msg.title}`);
+  }
+}
+
+// ---------- updates ----------
+
+// The newest change time across the helper's own code: when it moves, there's an update to load.
+const SRC_DIR = fileURLToPath(new URL('.', import.meta.url));
+function codeStamp() {
+  let newest = 0;
+  for (const f of readdirSync(SRC_DIR, { recursive: true })) {
+    if (String(f).endsWith('.js')) newest = Math.max(newest, statSync(path.join(SRC_DIR, String(f))).mtimeMs);
+  }
+  return newest;
+}
+const startedStamp = codeStamp();
+let lastUpdateCheck = Date.now();
+let updateNoted = false;
+
+// Between applications, with nothing waiting on you: restart into the new code (run.js starts it again).
+async function restartIfUpdated() {
+  if (Date.now() - lastUpdateCheck < UPDATE_CHECK_MS) return;
+  lastUpdateCheck = Date.now();
+  if (codeStamp() === startedStamp) return;
+  if (!SUPERVISED) {
+    if (!updateNoted) log('An update is ready. Restart the helper to load it (Ctrl+C, then npm start).');
+    updateNoted = true;
+    return;
+  }
+  if (waiting.size) return; // finish what's open first
+  log('Updated code found. Restarting to load it…');
+  stopping = true;
+  await context.close().catch(() => {});
+  process.exit(RESTART_CODE);
+}
 
 async function screenshot(page, job, label) {
   const safe = `${job.company}-${job.id}`.replace(/[^a-z0-9-]+/gi, '_').slice(0, 80);
@@ -148,6 +206,7 @@ async function checkWaiting() {
       w.needs = 'code';
       log(`${job.company}: the site emailed a verification code. Enter it on the page or in the helper window.`);
       await report(id, 'needs_you', CODE_NOTE, 'code');
+      callYou(page, true);
     }
     if (w.needs === 'code') {
       // Only a code you entered on the page (or gave Claude). The helper never reads your email.
@@ -196,6 +255,7 @@ async function handle({ job, form, answers, prefs = {} }) {
     if (missing.length) {
       log('  Needs you:', missing.join('; '));
       await report(job.id, 'needs_you', `Couldn’t fill: ${missing.join('; ')}. Finish it in the helper window and submit there.`);
+      callYou(page);
       return wait(page, job, filler);
     }
     await screenshot(page, job, 'filled');
@@ -204,6 +264,7 @@ async function handle({ job, form, answers, prefs = {} }) {
     if (outcome === 'code') {
       log('  The site emailed a verification code. Enter it on the page or in the helper window.');
       await report(job.id, 'needs_you', CODE_NOTE, 'code');
+      callYou(page, true);
       return wait(page, job, filler, 'code');
     }
     if (outcome.limit) return holdCompany(page, job, outcome.limit);
@@ -217,6 +278,7 @@ async function handle({ job, form, answers, prefs = {} }) {
         : `Pressed Submit but no confirmation showed up. Check the helper window.${shown ? ` The page says: “${shown}”` : ''}`;
     log(`  ${note}`);
     await report(job.id, 'needs_you', note);
+    callYou(page, outcome === 'captcha');
     return wait(page, job, filler);
   } catch (err) {
     if (err instanceof amazon.LimitError) {
@@ -264,9 +326,21 @@ async function prepareNext() {
 
 // ---------- main loop ----------
 
+// Settings → "Send automatically": the site picks an application with nothing new to answer and hands it over
+// on the next claim.
+let lastAutosend = 0;
+async function autoSend() {
+  if (Date.now() - lastAutosend < AUTOSEND_EVERY_MS) return false;
+  lastAutosend = Date.now();
+  const { job } = await api('/runner/autosend', { method: 'POST', body: info }).catch(() => ({}));
+  if (job) log(`Nothing new to answer, sending automatically: ${job.company} · ${job.title}`);
+  return !!job;
+}
+
 log(`Apply Desk helper ${VERSION}: watching ${cfg.siteUrl}. Leave this running; Ctrl+C to stop.`);
 let lastClaim = 0;
 while (!stopping) {
+  await restartIfUpdated();
   await checkWaiting();
   if (waiting.size < MAX_WAITING && Date.now() - lastClaim >= POLL_MS) {
     lastClaim = Date.now();
@@ -276,15 +350,20 @@ while (!stopping) {
     } catch (err) {
       log('Could not reach the site:', err.message);
     }
+    await deliver(claim?.outbox);
     if (claim?.job) {
       await handle(claim);
       lastClaim = 0; // look for the next one right away
       continue;
     }
+    if (claim && (await autoSend())) {
+      lastClaim = 0; // it's ready now: claim it right away
+      continue;
+    }
     if (claim && waiting.size === 0) await prepareNext();
   } else if (waiting.size >= MAX_WAITING && Date.now() - lastClaim >= POLL_MS) {
     lastClaim = Date.now();
-    api('/runner/heartbeat', { method: 'POST', body: info }).catch(() => {});
+    await api('/runner/heartbeat', { method: 'POST', body: info }).then((r) => deliver(r.outbox)).catch(() => {});
   }
   await sleep(waiting.size ? 4000 : Math.max(1000, POLL_MS - (Date.now() - lastClaim)));
 }

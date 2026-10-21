@@ -35,6 +35,7 @@ async function api(path, { method = 'GET', body } = {}) {
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.data = data;
+    err.status = res.status;
     throw err;
   }
   return data;
@@ -96,14 +97,10 @@ async function loadState() {
     // A paused site (Amazon's 10-application limit): its jobs are held back until a spot opens.
     const pausedNotes = Object.entries(s.paused || {}).map(([site, p]) =>
       `${p.note} The helper checks again once a day${site === 'amazon' ? '; to free a spot sooner, withdraw an old application on Amazon’s Application Dashboard' : ''}.`);
-    // A company that caps applications per person: its other jobs wait until the hold ends.
-    const held = s.held || [];
-    const heldNote = held.length
-      ? `On hold (they limit applications per person): ${held.map((h) => `${h.company} until ${new Date(h.until).toLocaleDateString()}`).join(', ')}.`
-      : '';
+    // Companies on hold (at their limit or yours) are listed in Settings, not here: nothing to do about them.
     const text = codes === 1
       ? 'An application is waiting for the verification code the site emailed you.'
-      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : [s.alert?.text, ...pausedNotes, heldNote].filter(Boolean).join(' ');
+      : codes > 1 ? `${codes} applications are waiting for verification codes the sites emailed you.` : [s.alert?.text, ...pausedNotes].filter(Boolean).join(' ');
     $('#alert').hidden = !text;
     $('#alert-text').textContent = text;
     $('#alert-go').hidden = !codes;
@@ -323,6 +320,13 @@ async function sendCurrent(formEl) {
     renderQueue();
   } catch (err) {
     btn.disabled = false;
+    if (err.status === 409) {
+      // Already on its way (auto-send got to it): nothing to do but move on.
+      toast(err.message);
+      loadState();
+      renderQueue();
+      return;
+    }
     if (err.data?.missing) {
       const labels = new Set(err.data.missing);
       const names = new Set(current.form.questions.filter((q) => labels.has(q.label)).map((q) => q.name));
@@ -551,8 +555,9 @@ async function renderSettings() {
   const panel = $('#tab-settings');
   panel.replaceChildren(h('div', { class: 'loading' }, 'Loading…'));
   let s;
+  let held = [];
   try {
-    s = await api('/settings');
+    [s, { held = [] }] = await Promise.all([api('/settings'), api('/state')]);
   } catch (err) {
     panel.replaceChildren(errorCard(err));
     return;
@@ -562,18 +567,50 @@ async function renderSettings() {
     ta.value = (s[name] || []).join('\n');
     return h('div', { class: 'field' }, h('label', { for: `s-${name}` }, label), help && h('div', { class: 'help' }, help), ta);
   };
-  const number = (name, label) => {
-    const el = h('input', { id: `s-${name}`, name, type: 'number', min: 1 });
+  const number = (name, label, min = 1, max) => {
+    const el = h('input', { id: `s-${name}`, name, type: 'number', min, max });
     el.value = s[name];
     return h('div', { class: 'field' }, h('label', { for: `s-${name}` }, label), el);
   };
+  const text = (name, label, help) => {
+    const el = h('input', { id: `s-${name}`, name, type: 'text', autocomplete: 'off', spellcheck: 'false' });
+    el.value = s[name] || '';
+    return h('div', { class: 'field' }, h('label', { for: `s-${name}` }, label), help && h('div', { class: 'help' }, help), el);
+  };
+  const check = (name, label) => h('label', { class: 'check' }, h('input', { type: 'checkbox', name, checked: s[name] !== false }), label);
   const remote = h('input', { type: 'checkbox', id: 's-remote', checked: s.remoteUS });
+
+  const holds = held.length
+    ? h('ul', { class: 'holds' }, held.map((x) => h('li', {},
+      h('span', {}, `${x.company} until ${new Date(x.until).toLocaleDateString()} `, h('span', { class: 'muted' }, `(${x.reason})`)),
+      h('button', { type: 'button', class: 'btn btn-small', onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        await api('/holds/release', { method: 'POST', body: { key: x.key } }).catch((err) => toast(err.message, 'bad'));
+        toast(`${x.company} is back in your queue.`);
+        renderSettings();
+      } }, 'Release'))))
+    : h('p', { class: 'muted small' }, 'No companies on hold.');
+
+  const testButton = h('button', { type: 'button', class: 'btn', onclick: async () => {
+    testButton.disabled = true;
+    try {
+      const r = await post('/notify/test');
+      const said = (x, what) => (x.ok ? `${what} sent` : `${what} not sent (${x.why})`);
+      toast(`${said(r.phone, 'Phone push')}. ${said(r.mail, 'Email')}.`, r.phone.ok && r.mail.ok ? undefined : 'bad');
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      testButton.disabled = false;
+    }
+  } }, 'Send today’s summary now');
 
   const form = h('form', { class: 'card', novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
     const body = { ...s, remoteUS: remote.checked };
     for (const el of form.querySelectorAll('textarea[name]')) body[el.name] = el.value.split('\n').map((x) => x.trim()).filter(Boolean);
     for (const el of form.querySelectorAll('input[type=number]')) body[el.name] = Number(el.value);
+    for (const el of form.querySelectorAll('input[type=text][name]')) body[el.name] = el.value.trim();
+    for (const el of form.querySelectorAll('input[type=checkbox][name]')) body[el.name] = el.checked;
     try {
       await api('/settings', { method: 'PUT', body });
       toast('Settings saved. New searches use them from the next refresh.');
@@ -585,6 +622,22 @@ async function renderSettings() {
   h('fieldset', {}, h('legend', {}, 'Goal and freshness'),
     h('div', { class: 'grid' }, number('dailyGoal', 'Applications per day'), number('maxAgeDays', 'Only jobs posted in the last N days')),
     h('div', { class: 'grid' }, number('maxYearsRequired', 'Skip jobs asking for more than N years of experience'))),
+  h('fieldset', {}, h('legend', {}, 'Sending'),
+    h('p', { class: 'muted small' }, 'With this on, an application where every required question is answered from your profile and past answers goes to the helper without you pressing Send. Best guesses and Claude’s drafts still wait for you. Each one is on the Sent tab with its confirmation screenshot.'),
+    check('autoSend', 'Send automatically when there’s nothing new to answer'),
+    h('div', { class: 'grid' }, number('autoSendPerDay', 'At most this many a day (all sends count)'))),
+  h('fieldset', {}, h('legend', {}, 'Per company'),
+    h('p', { class: 'muted small' }, 'Lots of applications to one company can read as spam to its recruiters. When a company’s own posting states a limit (Coinbase: 5 in 6 months), that limit applies too. Amazon and Microsoft follow their own site limits.'),
+    h('div', { class: 'grid' }, number('companyCap', 'At most N applications per company (0 = no limit)', 0), number('companyCapDays', '…within this many days')),
+    h('div', { class: 'label' }, 'Companies on hold'), holds),
+  h('fieldset', {}, h('legend', {}, 'Notifications'),
+    h('p', { class: 'muted small' }, 'Phone: install the free ntfy app (iPhone or Android), tap +, and subscribe to the topic below. You get a push when an application needs you (an emailed code, a CAPTCHA), and the day’s summary. Email: the summary also goes to your profile email.'),
+    text('notifyTopic', 'Your ntfy topic', 'Keep it private: anyone with the topic can read your pushes. Clear it and save to get a new one.'),
+    check('pushNeedsYou', 'Push when an application needs you'),
+    check('summaryPush', 'Push the day’s summary'),
+    check('summaryEmail', 'Email the day’s summary'),
+    h('div', { class: 'grid' }, number('summaryHour', 'Summary time (hour, 0–23)', 0, 23), text('timeZone', 'Time zone')),
+    h('div', { class: 'actions' }, testButton)),
   h('fieldset', {}, h('legend', {}, 'Where'),
     h('label', { class: 'check' }, remote, 'Include remote jobs anywhere in the US'),
     lines('areas', 'Seattle-area places', 'One per line. Jobs whose location mentions one of these count as local.', 5)),

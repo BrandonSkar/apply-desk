@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autofill, bankKey, fromBank, looseKey, missingRequired, pickOption, pickYears, toBank } from '../src/autofill.js';
+import { autoAnswers, autofill, bankKey, fromBank, looseKey, missingRequired, pickOption, pickYears, toBank } from '../src/autofill.js';
 import { EMPTY_PROFILE } from '../src/defaults.js';
 
 const profile = {
@@ -353,6 +353,28 @@ test('written questions use the profile answers (with the company name), plus lo
   const named = autofill({ questions: [t('a', 'Why Langfuse?'), t('b', 'Why do you want to join?')] }, p, new Map(), 'ClickHouse');
   assert.equal(named.values.a, 'I want to work at Langfuse because of its product.');
   assert.equal(named.values.b, 'I want to work at ClickHouse because of its product.');
+});
+
+test('autoAnswers: only applications answered entirely from the profile and past answers go out on their own', () => {
+  const yn = [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }];
+  const base = [
+    { name: 'resume', label: 'Resume', type: 'file', kind: 'resume', required: true },
+    { name: 'first_name', label: 'First Name', type: 'text', required: true },
+    { name: 'auth', label: 'Are you legally authorized to work in the United States?', type: 'select', required: true, options: yn },
+    { name: 'extra', label: 'Anything else?', type: 'textarea', required: false },
+  ];
+  const fillFor = (questions) => autofill({ questions }, { ...profile, work_authorized: 'Yes' });
+  const ok = autoAnswers({ questions: base }, fillFor(base));
+  assert.deepEqual(ok, { resume: '__resume__', first_name: profile.first_name, auth: 'Yes' });
+
+  const open = [...base, { name: 'why', label: 'What draws you to this team?', type: 'textarea', required: true }];
+  assert.equal(autoAnswers({ questions: open }, fillFor(open)), null);
+  const file = [...base, { name: 'cl', label: 'Cover letter', type: 'file', required: true }];
+  assert.equal(autoAnswers({ questions: file }, fillFor(file)), null);
+  // A best guess on a required question still waits for you.
+  const guessed = fillFor(base);
+  guessed.bucket.auth = 'suggested';
+  assert.equal(autoAnswers({ questions: base }, guessed), null);
 });
 
 test('pickOption and pickYears', () => {

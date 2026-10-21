@@ -78,3 +78,26 @@ export function filterJobs(jobs, settings, now = Date.now()) {
   }
   return kept;
 }
+
+// A company's own cap on applications per person, when its posting states one:
+// "Candidates may submit a maximum of 5 applications within a 6 month period" -> { max: 5, days: 183, label: '6 months' }.
+const NUMBER = `(\\d+|${Object.keys(NUM_WORDS).join('|')})`;
+const LIMIT = new RegExp(
+  String.raw`(?:maximum of|max(?:imum)?|up to|no more than|limit(?:ed)? to|limit of|at most)\s+${NUMBER}`
+  + String.raw`\s+(?:job\s+)?(?:applications?|positions?|roles?|jobs?|openings?|requisitions?)\b[^.]{0,40}?`
+  + String.raw`\b(?:(?:with)?in|per|every|over|during)\s+(?:a|an|any|the|one)?\s*(?:rolling\s+|single\s+)?`
+  + String.raw`${NUMBER}?[\s-]*(day|week|month|year)s?\b`,
+  'i',
+);
+const UNIT_DAYS = { day: 1, week: 7, month: 30.5, year: 365 };
+
+export function postedLimit(text) {
+  const m = LIMIT.exec(String(text || ''));
+  if (!m) return null;
+  const num = (s) => (/^\d+$/.test(s) ? Number(s) : NUM_WORDS[s.toLowerCase()]);
+  const max = num(m[1]);
+  const n = m[2] ? num(m[2]) : 1;
+  const unit = m[3].toLowerCase();
+  if (!max || !n) return null;
+  return { max, days: Math.ceil(n * UNIT_DAYS[unit]), label: `${n} ${unit}${n === 1 ? '' : 's'}` };
+}

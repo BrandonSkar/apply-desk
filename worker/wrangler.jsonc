@@ -1,5 +1,6 @@
 // Apply Desk at brandonskar.com/jobs (see src/index.js). Deploy with `npm run deploy` from this folder.
-// Secrets, set once with `npx wrangler secret put <NAME>`: APP_PASSWORD, SESSION_SECRET, RUNNER_TOKEN.
+// Secrets, set once with `npx wrangler secret put <NAME>`: APP_PASSWORD, SESSION_SECRET, RUNNER_TOKEN,
+// and optionally ANTHROPIC_API_KEY (Claude drafts answers to new questions).
 {
   "name": "apply-desk",
   "main": "src/index.js",
@@ -15,8 +16,13 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "apply-desk", "database_id": "5158101e-3f25-484d-9b1b-cfb2edabdae8" }
   ],
-  // Each run checks a few job sources; every 5 minutes covers all of them in about two hours.
+  // Each run checks a few job sources (every 5 minutes covers all of them in about two hours), drafts answers
+  // for the next jobs in line, and sends the evening summary once a day.
   "triggers": { "crons": ["*/5 * * * *"] },
+  // The evening summary email. Cloudflare only delivers to addresses verified in the account's Email Routing
+  // (`npx wrangler email routing addresses create <you@example.com>`), sending from this domain.
+  "send_email": [{ "name": "EMAIL" }],
+  "vars": { "MAIL_FROM": "applydesk@brandonskar.com" },
   // Only /jobs. The site's main Worker answers the rest of brandonskar.com, and routes run in front of it.
   "routes": [
     { "pattern": "brandonskar.com/jobs*", "zone_name": "brandonskar.com" }
