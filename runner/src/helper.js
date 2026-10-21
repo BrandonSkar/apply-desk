@@ -11,14 +11,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
-import { companyLimit, enterCode, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
+import { companyLimit, enterCode, limitTexts, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
 import * as ashby from './fillers/ashby.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -119,8 +119,10 @@ async function holdCompany(page, job, message) {
 
 const waiting = new Map(); // job id -> { page, job, filler, until, needs, enteredAt }
 
-function wait(page, job, filler, needs = null) {
-  waiting.set(job.id, { page, job, filler, needs, until: Date.now() + WAIT_FOR_YOU_MS, enteredAt: 0 });
+async function wait(page, job, filler, needs = null) {
+  // Limit wording already on the page (e.g. in the job description) isn't a rejection; only new wording is.
+  const limitBefore = await limitTexts(page);
+  waiting.set(job.id, { page, job, filler, needs, limitBefore, until: Date.now() + WAIT_FOR_YOU_MS, enteredAt: 0 });
 }
 
 async function checkWaiting() {
@@ -135,7 +137,7 @@ async function checkWaiting() {
       await finish(page, job, true);
       continue;
     }
-    const limited = await companyLimit(page).catch(() => '');
+    const limited = await companyLimit(page, w.limitBefore);
     if (limited) {
       waiting.delete(id);
       await holdCompany(page, job, limited);

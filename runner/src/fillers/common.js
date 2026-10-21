@@ -173,20 +173,30 @@ export async function enterCode(page, code) {
 // how many of its jobs one person can apply to.
 export const COMPANY_LIMIT = /limiting applications|maximum number of (job )?applications|reached the (maximum|limit)|application limit|limit of \d+ (job )?applications|too many applications/i;
 
-export async function companyLimit(page) {
-  const el = page.getByText(COMPANY_LIMIT).first();
-  return (await el.isVisible().catch(() => false)) ? (await el.innerText()).trim().slice(0, 200) : '';
+// Every visible line on the page that talks about an application limit.
+export async function limitTexts(page) {
+  return page.getByText(COMPANY_LIMIT).evaluateAll((els) =>
+    els.filter((e) => e.getClientRects().length).map((e) => e.innerText.trim().slice(0, 200))).catch(() => []);
+}
+
+// A limit message that wasn't on the page before (`before` = limitTexts from then). Postings can state their
+// limit in the description ("Application Limit: Candidates may submit a maximum of 5 applications..."); that
+// line is there all along and isn't a rejection.
+export async function companyLimit(page, before = []) {
+  return (await limitTexts(page)).find((t) => !before.includes(t)) || '';
 }
 
 // After clicking Submit: watch for success, a code prompt, a company limit, a CAPTCHA challenge, or form errors.
 export async function waitOutcome(page, { isDone, captcha, errors }, timeoutMs = 45_000) {
   const end = Date.now() + timeoutMs;
   const start = Date.now();
+  // What's on the page as Submit is pressed; the site's answer takes a round trip.
+  const limitBefore = await limitTexts(page);
   while (Date.now() < end) {
     if (page.isClosed()) return 'unknown';
     if (await isDone(page).catch(() => false)) return 'submitted';
     if (await needsCode(page).catch(() => false)) return 'code';
-    const limited = await companyLimit(page).catch(() => '');
+    const limited = await companyLimit(page, limitBefore);
     if (limited) return { limit: limited };
     if (await captcha(page).catch(() => false)) return 'captcha';
     if (Date.now() - start > 4000) {
