@@ -115,7 +115,16 @@ async function fillHistory(page, p, missing) {
   }
   const degree = DEGREES.find(([re]) => re.test(p.degree || ''))?.[1] || p.degree;
   await field('degree--0', 'Education: degree', degree, 'combo');
-  await field('discipline--0', 'Education: field of study', p.discipline, 'combo');
+  // Greenhouse's list of fields has no "Software Development"; Computer Science is the closest it offers.
+  const discipline = page.locator(byId('discipline--0'));
+  if (p.discipline && (await discipline.count()) && (await discipline.isVisible().catch(() => false))) {
+    let picked = false;
+    for (const name of [...new Set([p.discipline, 'Computer Science'])]) {
+      picked = await pickCombo(page, discipline, name).then(() => true, () => false);
+      if (picked) break;
+    }
+    if (!picked && (await discipline.getAttribute('aria-required')) === 'true') missing.push('Education: field of study');
+  }
   await field('end-year--0', 'Education: graduation year', p.grad_year);
   await field('end-month--0', 'Education: graduation month', '', 'combo');
   await field('start-year--0', 'Education: start year', '');

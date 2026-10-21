@@ -182,6 +182,9 @@ const SUGGESTED_RULES = [
   [/(able|willing|comfortable).{0,30}(work|commute|come).{0,40}(office|on-?site|hybrid|in person|days)/i, () => [YES, 'Yes']],
   [/time ?zone/i, () => [/pacific/i, /\bPST\b|\bPT\b/, 'Pacific Time']],
   [/start date|when can you start|available to start|notice period|earliest/i, (p) => p.notice_period],
+  // Field of study: the profile's wording, or the closest field a fixed list offers.
+  [/field of study|\bmajor\b|discipline|area of study|what did you study/i,
+    (p) => (p.discipline ? [p.discipline, /^computer science$/i, /computer science/i] : null)],
   [/degree|education level|highest level of education/i, (p) => [p.degree, /bachelor/i]],
   [/school|university|college/i, (p) => p.school],
   [/acknowledge|consent|i agree|agree to|i have read|privacy|certify|confirm|attest|understand/i, () => [/acknowledge|agree|^yes|confirm|^i have|^i do|accept|understand|certify/i], true],
