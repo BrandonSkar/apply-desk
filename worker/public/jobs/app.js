@@ -184,8 +184,13 @@ function jobCard({ job, form, fill }) {
     formEl.append(h('div', { class: 'qsection' },
       h('h3', {}, 'Check these'),
       h('p', { class: 'muted' }, 'Best guesses for questions you haven’t answered before. Already filled in, so only change what’s wrong.'),
-      groups.suggested.map((q) => field(q, fill.values[q.name]))));
+      groups.suggested.map((q) => {
+        const el = field(q, fill.values[q.name]);
+        if (fill.drafted?.includes(q.name)) el.append(h('div', { class: 'drafted' }, 'Drafted by Claude from your profile. Read it before sending.'));
+        return el;
+      })));
   }
+  if (fill.draftError) formEl.append(h('p', { class: 'muted small' }, fill.draftError));
   if (groups.optional.length) {
     formEl.append(h('details', { class: 'qgroup' },
       h('summary', {}, `Optional questions (${groups.optional.length})`),
@@ -521,15 +526,15 @@ async function renderProfile() {
   for (const [group, fields] of groups) {
     const fs = h('fieldset', {}, h('legend', {}, group));
     if (group === 'Voluntary self-ID') fs.append(h('p', { class: 'muted small' }, 'Leave these as “Decline” to answer “I don’t wish to answer” wherever it’s offered.'));
-    if (group === 'Written answers') fs.append(h('p', { class: 'muted small' }, 'Used for written questions like “Why {company}?” or “Tell us about a hard problem.” They show under “Check these” so you can tailor each one before sending.'));
+    if (group === 'Written answers') fs.append(h('p', { class: 'muted small' }, 'Used for written questions like “Why {company}?” or “Tell us about a hard problem.” For any other question, Claude drafts an answer from “About you” and these. All of them show under “Check these” so you can tailor each one before sending.'));
     const grid = h('div', { class: 'grid' });
     for (const [key, label] of fields) {
       const id = `p-${key}`;
       const value = data.profile[key] ?? '';
-      const essay = key.startsWith('essay_');
+      const essay = key.startsWith('essay_') || key === 'background';
       const input = YES_NO.has(key)
         ? h('select', { id, name: key }, ['Yes', 'No'].map((v) => h('option', { value: v, selected: value === v }, v)))
-        : essay ? h('textarea', { id, name: key, rows: 6 }) : h('input', { id, name: key, type: 'text', autocomplete: 'off' });
+        : essay ? h('textarea', { id, name: key, rows: key === 'background' ? 16 : 6 }) : h('input', { id, name: key, type: 'text', autocomplete: 'off' });
       if (!YES_NO.has(key)) input.value = value;
       grid.append(h('div', { class: `field${key === 'address' || essay ? ' wide' : ''}` }, h('label', { for: id }, label), input));
     }

@@ -5,6 +5,7 @@ import { filterJobs, requiredYears } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
 import { autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
+import { draftable, draftAnswers } from './drafts.js';
 
 const AUTO_SOURCES = ['greenhouse', 'lever', 'ashby', 'amazon', 'microsoft'];
 // Greenhouse and Lever forms come from public APIs. Amazon's and Microsoft's need your login, so the helper
@@ -43,9 +44,9 @@ const STALE_SUBMIT_MS = 20 * 60 * 1000;
 const now = () => new Date().toISOString();
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (err) {
       console.error(err);
       return json({ error: 'Something went wrong on the server.' }, 500);
@@ -53,10 +54,11 @@ export default {
   },
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(refreshSlice(env));
+    ctx.waitUntil(draftAhead(env, '', { loadForms: false }).catch((err) => console.error('draftAhead', err)));
   },
 };
 
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const method = request.method;
@@ -90,7 +92,12 @@ async function api(request, env, path, url) {
   if (body === null) return json({ error: 'Body must be JSON (max 200 KB).' }, 400);
 
   if (path === '/state' && method === 'GET') return json(await state(env, url.searchParams.get('since')));
-  if (path === '/next' && method === 'GET') return json(await next(env, url.searchParams.get('lane') || 'auto'));
+  if (path === '/next' && method === 'GET') {
+    const r = await next(env, url.searchParams.get('lane') || 'auto');
+    // Draft the next jobs in line while you work on this one.
+    if (r.job && r.form) ctx?.waitUntil(draftAhead(env, r.job.id).catch((err) => console.error('draftAhead', err)));
+    return json(r);
+  }
   if (path === '/jobs' && method === 'GET') return json(await list(env, url.searchParams.get('view') || 'sent'));
   if (path === '/profile' && method === 'GET') return json({ profile: await getProfile(env), fields: PROFILE_FIELDS });
   if (path === '/profile' && method === 'PUT') return saveProfile(env, body);
@@ -154,53 +161,142 @@ async function state(env, since) {
   };
 }
 
-async function next(env, lane) {
+// The auto queue in the order it's served: the newest postings first, ones moved to "later" at the back.
+async function queueQuery(env, lane, limit, skipId = '') {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const paused = await getKV(env, 'paused', {});
-  const maxYears = settings.maxYearsRequired || 99;
-  const pick = env.DB.prepare(
+  return env.DB.prepare(
     `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}${notHeld(await getHolds(env))}
-       AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2)
-     ORDER BY later ASC, posted_at DESC LIMIT 1`,
-  ).bind(fresh, maxYears);
+       AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2) AND id != ?3
+     ORDER BY later ASC, posted_at DESC LIMIT ?4`,
+  ).bind(fresh, settings.maxYearsRequired || 99, skipId, limit);
+}
 
-  // Jobs whose requirement isn't known yet get checked as their description loads; over-limit ones drop out.
+// A job's form, loaded the first time it's needed. Null when the job drops out instead: the posting closed, the form
+// wouldn't load (moved to the back), or the description asks for more years than your limit.
+async function ensureForm(env, job, maxYears) {
+  let form = job.form ? JSON.parse(job.form) : null;
+  if (!form) {
+    try {
+      form = await loadForm(job);
+    } catch (err) {
+      if (err instanceof JobClosedError) {
+        await env.DB.prepare(`UPDATE jobs SET status = 'closed', note = 'Posting closed', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
+      } else {
+        await env.DB.prepare('UPDATE jobs SET later = later + 1, note = ?, updated_at = ? WHERE id = ?')
+          .bind(`Couldn't load the form: ${err.message}`.slice(0, 300), now(), job.id).run();
+      }
+      return null;
+    }
+    const years = requiredYears(form.description);
+    await env.DB.prepare('UPDATE jobs SET form = ?, min_years = COALESCE(min_years, ?), updated_at = ? WHERE id = ?')
+      .bind(JSON.stringify(form), years, now(), job.id).run();
+    return years != null && years > maxYears ? null : form;
+  }
+  if (job.min_years == null && form.description) {
+    // Read before this filter existed: check it now.
+    const years = requiredYears(form.description);
+    if (years != null) {
+      await env.DB.prepare('UPDATE jobs SET min_years = ? WHERE id = ?').bind(years, job.id).run();
+      if (years > maxYears) return null;
+    }
+  }
+  return form;
+}
+
+async function next(env, lane) {
+  const maxYears = (await getSettings(env)).maxYearsRequired || 99;
+  const pick = await queueQuery(env, lane, 1);
+  // Jobs that drop out while their form loads (closed, over the years limit) make way for the next one.
   for (let tries = 0; tries < 12; tries++) {
     const job = await pick.first();
     if (!job) return { job: null };
     if (lane === 'manual') return { job: publicJob(job) };
-
-    let form = job.form ? JSON.parse(job.form) : null;
-    if (!form) {
-      try {
-        form = await loadForm(job);
-        const years = requiredYears(form.description);
-        await env.DB.prepare('UPDATE jobs SET form = ?, min_years = COALESCE(min_years, ?), updated_at = ? WHERE id = ?')
-          .bind(JSON.stringify(form), years, now(), job.id).run();
-        if (years != null && years > maxYears) continue;
-      } catch (err) {
-        if (err instanceof JobClosedError) {
-          await env.DB.prepare(`UPDATE jobs SET status = 'closed', note = 'Posting closed', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
-        } else {
-          await env.DB.prepare('UPDATE jobs SET later = later + 1, note = ?, updated_at = ? WHERE id = ?')
-            .bind(`Couldn't load the form: ${err.message}`.slice(0, 300), now(), job.id).run();
-        }
-        continue;
-      }
-    } else if (job.min_years == null && form.description) {
-      // Read before this filter existed: check it now.
-      const years = requiredYears(form.description);
-      if (years != null) {
-        await env.DB.prepare('UPDATE jobs SET min_years = ? WHERE id = ?').bind(years, job.id).run();
-        if (years > maxYears) continue;
-      }
-    }
+    const form = await ensureForm(env, job, maxYears);
+    if (!form) continue;
     const profile = await getProfile(env);
     const fill = autofill(form, profile, await getBank(env), job.company);
+    await withDrafts(env, job, form, fill, profile);
     return { job: publicJob(job), form, fill };
   }
   return { job: null, note: 'Several forms failed to load in a row. Try again in a minute.' };
+}
+
+// ---------- drafted answers ----------
+// jobs.drafts holds { values, at } once drafted, or { retryAfter } while a draft is under way or after one failed.
+// A draft that was cut off (work after a response gets about 30 seconds) frees the job after this long.
+const DRAFT_PENDING_MS = 100 * 1000;
+const DRAFT_RETRY_MS = 5 * 60 * 1000;
+const DRAFT_AHEAD = 2;
+
+// Questions nothing else answered get Claude's drafts, shown under "Check these".
+async function withDrafts(env, job, form, fill, profile) {
+  const questions = draftable(form, fill);
+  if (!questions.length) return;
+  let drafts = await readDrafts(env, job.id);
+  if (!drafts?.values && env.ANTHROPIC_API_KEY) drafts = await makeDrafts(env, job, form, profile, questions);
+  if (drafts?.error) fill.draftError = drafts.error;
+  if (!drafts?.values) return;
+  fill.drafted = [];
+  for (const q of questions) {
+    const v = drafts.values[q.name];
+    if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
+    fill.values[q.name] = v;
+    fill.bucket[q.name] = 'suggested';
+    fill.drafted.push(q.name);
+  }
+}
+
+async function readDrafts(env, id) {
+  const row = await env.DB.prepare('SELECT drafts FROM jobs WHERE id = ?').bind(id).first();
+  return row?.drafts ? JSON.parse(row.drafts) : null;
+}
+
+// One draft per job at a time: whoever marks the job first writes the draft; anyone else waits for it, and takes
+// over if that draft was cut off. `wait` false: give up rather than wait (drafting ahead).
+async function makeDrafts(env, job, form, profile, questions, wait = true) {
+  for (let i = 0; i < 70; i++) {
+    const t = Date.now();
+    const claimed = await env.DB.prepare(
+      `UPDATE jobs SET drafts = ? WHERE id = ? AND (drafts IS NULL OR json_extract(drafts, '$.retryAfter') < ?)`,
+    ).bind(JSON.stringify({ retryAfter: t + DRAFT_PENDING_MS }), job.id, t).run();
+    if (claimed.meta.changes) return writeDrafts(env, job, form, profile, questions);
+    if (!wait) return null;
+    const d = await readDrafts(env, job.id);
+    if (d?.values || d?.error) return d;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}
+
+async function writeDrafts(env, job, form, profile, questions) {
+  let drafts;
+  try {
+    drafts = { values: await draftAnswers(env, { job, form, profile, questions }), at: now() };
+  } catch (err) {
+    console.error('draft', job.id, err);
+    drafts = { error: `Couldn't draft answers: ${String(err.message || err).slice(0, 200)}`, retryAfter: Date.now() + DRAFT_RETRY_MS };
+  }
+  await env.DB.prepare('UPDATE jobs SET drafts = ? WHERE id = ?').bind(JSON.stringify(drafts), job.id).run();
+  return drafts;
+}
+
+// Draft the next jobs in line ahead of time, so they open already filled in. The scheduled run only drafts jobs
+// whose form is already loaded, keeping its work small.
+async function draftAhead(env, currentId = '', { loadForms = true } = {}) {
+  if (!env.ANTHROPIC_API_KEY) return;
+  const maxYears = (await getSettings(env)).maxYearsRequired || 99;
+  const { results } = await (await queueQuery(env, 'auto', DRAFT_AHEAD, currentId)).all();
+  const profile = await getProfile(env);
+  const bank = await getBank(env);
+  await Promise.all(results.map(async (job) => {
+    if (job.drafts || (!loadForms && !job.form)) return;
+    const form = await ensureForm(env, job, maxYears);
+    if (!form) return;
+    const questions = draftable(form, autofill(form, profile, bank, job.company));
+    if (questions.length) await makeDrafts(env, job, form, profile, questions, false);
+  }));
 }
 
 async function list(env, view) {
@@ -536,7 +632,7 @@ async function getBank(env) {
 
 async function saveProfile(env, body) {
   const profile = {};
-  for (const [key] of PROFILE_FIELDS) profile[key] = String(body[key] ?? '').trim().slice(0, key.startsWith('essay_') ? 4000 : 500);
+  for (const [key] of PROFILE_FIELDS) profile[key] = String(body[key] ?? '').trim().slice(0, key === 'background' ? 12000 : key.startsWith('essay_') ? 4000 : 500);
   await setKV(env, 'profile', profile);
   return json({ ok: true, profile });
 }

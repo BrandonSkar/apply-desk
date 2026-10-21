@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   apply_url TEXT,                 -- the form the helper opens
   posted_at TEXT,                 -- ISO date
   min_years INTEGER,              -- smallest "N years of experience" in the description (null = unknown / not stated)
+  drafts TEXT,                    -- Claude's drafted answers: {values, at}, or {retryAfter} while drafting / after a failure
   found_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'new',
   later INTEGER NOT NULL DEFAULT 0, -- times "Later" was pressed; pushes it back in the queue

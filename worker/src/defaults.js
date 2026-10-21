@@ -101,6 +101,7 @@ export const PROFILE_FIELDS = [
   ['how_heard', 'How did you hear about the job? (default)', 'Common answers'],
   ['sms_opt_in', 'Get text (SMS) messages from employers?', 'Common answers'],
   ['government_ties', 'Government official or employee, ever (or related to one)?', 'Common answers'],
+  ['background', 'About you: experience, projects, skills (Claude drafts answers from this)', 'Written answers'],
   ['essay_why', 'Why this company? (write {company} where its name goes)', 'Written answers'],
   ['essay_built', 'The most impactful thing you’ve built', 'Written answers'],
   ['essay_problem', 'A hard problem you solved', 'Written answers'],
