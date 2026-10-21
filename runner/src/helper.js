@@ -18,7 +18,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -84,6 +84,14 @@ async function screenshot(page, job, label) {
   const file = path.join(cfg.shotsDir, `${new Date().toISOString().slice(0, 10)}_${safe}_${label}.png`);
   await page.screenshot({ path: file, fullPage: true }).catch(() => {});
   return file;
+}
+
+// The likeliest message on the page after Submit: a line mentioning success, thanks, errors or verification.
+async function pageMessage(page) {
+  const text = await page.locator('body').innerText().catch(() => '');
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => /thank|success|submitted|received|error|invalid|required|verif|spam|try again|unable|problem|captcha/i.test(l));
+  return (hit || lines.slice(0, 3).join(' · ')).slice(0, 200);
 }
 
 async function finish(page, job, ok) {
@@ -182,11 +190,14 @@ async function handle({ job, form, answers, prefs = {} }) {
       await report(job.id, 'needs_you', CODE_NOTE, 'code');
       return wait(page, job, filler, 'code');
     }
+    // Record what the page shows, so an unexpected message can be diagnosed from the Sent tab.
+    await screenshot(page, job, 'after-submit');
+    const shown = outcome === 'unknown' ? await pageMessage(page) : '';
     const note = outcome === 'captcha'
       ? 'The site wants a CAPTCHA. Solve it in the helper window; it will notice when the application goes through.'
       : outcome.errors
         ? `The form said: ${outcome.errors.join('; ')}. Fix it in the helper window and submit there.`
-        : 'Pressed Submit but no confirmation showed up. Check the helper window.';
+        : `Pressed Submit but no confirmation showed up. Check the helper window.${shown ? ` The page says: “${shown}”` : ''}`;
     log(`  ${note}`);
     await report(job.id, 'needs_you', note);
     return wait(page, job, filler);

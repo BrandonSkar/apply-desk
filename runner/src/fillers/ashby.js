@@ -108,7 +108,9 @@ export async function fill(page, { form, answers, resumePath }) {
 
 export async function isDone(page) {
   if (/\/application\/?(confirmation|success|submitted)/i.test(page.url())) return true;
-  return page.getByText(/thank(s| you) for applying|application (has been |was )?(submitted|received)|successfully submitted|we('ve| have) received your application/i).first().isVisible();
+  // Ashby shows a green "Success" box; companies word the message their own way.
+  if (await page.locator('[class*="success" i]:visible').filter({ hasText: /success|thank/i }).first().isVisible().catch(() => false)) return true;
+  return page.getByText(/thank(s| you) for (applying|your (interest|application))|application (has been |was )?(submitted|received)|successfully submitted|we('ve| have) received your application/i).first().isVisible();
 }
 
 const captcha = async (page) => {
