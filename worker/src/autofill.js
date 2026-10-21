@@ -133,7 +133,8 @@ const AUTO_RULES = [
   [/sponsor/i, (p) => yesNo(p.needs_sponsorship)],
   [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],
   [/(countr(y|ies)).{0,60}(anticipate|plan|intend|expect|will be).{0,20}work/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
-  [/(country|countries).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,30}country|current country|country of residence/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  [/(country|countries).{0,40}(resid(e|ing|ence)|liv(e|ing)|located|based)|(resid(e|ing)|liv(e|ing)|located|based).{0,30}country|current country|country of residence/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  [/^(current )?location$|^location \(city/i, (p) => [p.city && p.state ? `${p.city}, ${p.state}` : '']],
   [/(current|most recent|previous|present).{0,25}(employer|company)|^company name/i, (p) => p.current_company],
   [/(current|most recent|previous|present).{0,25}(job )?title|current (role|position)/i, (p) => p.current_title],
   [/city,? (and )?state|(current|permanent|home) (work )?location|where are you (currently )?(located|based)|where do you (currently )?live/i,
@@ -188,6 +189,15 @@ const SUGGESTED_RULES = [
   [/degree|education level|highest level of education/i, (p) => [p.degree, /bachelor/i]],
   [/school|university|college/i, (p) => p.school],
   [/acknowledge|consent|i agree|agree to|i have read|privacy|certify|confirm|attest|understand/i, () => [/acknowledge|agree|^yes|confirm|^i have|^i do|accept|understand|certify/i], true],
+];
+
+// Written questions answered from the profile's reusable answers. Tested against the label with the company's
+// name replaced by {company}; answers can use {company} too. Shown under "Check these" so you can tailor them.
+const ESSAY_RULES = [
+  [/\bwhy\b[^?]{0,25}\{company\}|\{company\}('s)? mission|excit\w*[^?]{0,60}(\{company\}|mission|company|role|team)|what (draws|attracts|interests|excites) you|why (do you want to|are you interested|this (role|company|team)|now\b|us\b|join)/i, 'essay_why'],
+  [/most impactful|proud\w* of|(something|thing|project) you('ve| have)? (built|shipped|made)|tell us about a project/i, 'essay_built'],
+  [/(hard|difficult|challenging|complex|toughest|tricky) (technical )?(problem|challenge|bug)|a (time|problem) (when )?you (solved|overcame|faced)|technical challenge/i, 'essay_problem'],
+  [/(good|great|strong) fit|why (should we hire|are you a fit)|tell us about yourself|about yourself|what (would|will|can) you bring|introduce yourself/i, 'essay_fit'],
 ];
 
 export function pickOption(options, wanted) {
@@ -367,6 +377,13 @@ export function autofill(form, profile, bank = new Map(), company = '') {
       if (v) { set(v, 'suggested'); done = true; break; }
     }
     if (done) continue;
+
+    if (q.type === 'textarea' || q.type === 'text') {
+      const label = company ? q.label.replace(new RegExp(escapeRe(company), 'gi'), '{company}') : q.label;
+      const rule = ESSAY_RULES.find(([re]) => re.test(label));
+      const answer = rule && profile[rule[1]];
+      if (answer && answer.trim()) { set(fromBank(answer, company), 'suggested'); continue; }
+    }
 
     if (q.section === 'demographic' && (q.type === 'select' || q.type === 'multiselect')) {
       const v = fit(q, [DECLINE]);

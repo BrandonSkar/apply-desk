@@ -311,6 +311,38 @@ test('work authorization vs. sponsorship vs. "have you worked at" wording', () =
   assert.notEqual(values.e, 'No');
 });
 
+test('written questions use the profile answers (with the company name), plus location and country of residence', () => {
+  const p = {
+    ...profile, city: 'Auburn', state: 'WA', country: 'United States',
+    essay_why: 'I want to work at {company} because of its product.',
+    essay_built: 'I built Apply Desk.', essay_problem: 'Five platforms, one filler.', essay_fit: 'Four years shipping features.',
+  };
+  const t = (name, label, type = 'textarea') => ({ name, label, type, required: true });
+  const form = {
+    questions: [
+      t('a', 'Why ElevenLabs, and why now?'),
+      t('b', 'What makes you excited about the ElevenLabs mission?'),
+      t('c', "What's the most impactful thing you've built? What was your specific contribution?"),
+      t('d', 'Finally, tell us about a hard problem in your past!'),
+      t('e', 'Why are you a good fit for this role?'),
+      t('f', 'Briefly describe your experience with Ads products'),
+      t('g', 'Location', 'text'),
+      { name: 'h', label: "Country you're currently residing in", type: 'select', required: true,
+        options: ['Canada', 'United States', 'Mexico'].map((l) => ({ label: l, value: l })) },
+    ],
+  };
+  const { values, bucket } = autofill(form, p, new Map(), 'ElevenLabs');
+  assert.equal(values.a, 'I want to work at ElevenLabs because of its product.');
+  assert.equal(values.b, 'I want to work at ElevenLabs because of its product.');
+  assert.equal(values.c, 'I built Apply Desk.');
+  assert.equal(values.d, 'Five platforms, one filler.');
+  assert.equal(values.e, 'Four years shipping features.');
+  assert.equal(bucket.a, 'suggested');
+  assert.equal(bucket.f, 'open');
+  assert.equal(values.g, 'Auburn, WA');
+  assert.equal(values.h, 'United States');
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');

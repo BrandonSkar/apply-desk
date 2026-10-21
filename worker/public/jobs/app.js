@@ -516,15 +516,17 @@ async function renderProfile() {
   for (const [group, fields] of groups) {
     const fs = h('fieldset', {}, h('legend', {}, group));
     if (group === 'Voluntary self-ID') fs.append(h('p', { class: 'muted small' }, 'Leave these as “Decline” to answer “I don’t wish to answer” wherever it’s offered.'));
+    if (group === 'Written answers') fs.append(h('p', { class: 'muted small' }, 'Used for written questions like “Why {company}?” or “Tell us about a hard problem.” They show under “Check these” so you can tailor each one before sending.'));
     const grid = h('div', { class: 'grid' });
     for (const [key, label] of fields) {
       const id = `p-${key}`;
       const value = data.profile[key] ?? '';
+      const essay = key.startsWith('essay_');
       const input = YES_NO.has(key)
         ? h('select', { id, name: key }, ['Yes', 'No'].map((v) => h('option', { value: v, selected: value === v }, v)))
-        : h('input', { id, name: key, type: 'text', autocomplete: 'off' });
+        : essay ? h('textarea', { id, name: key, rows: 6 }) : h('input', { id, name: key, type: 'text', autocomplete: 'off' });
       if (!YES_NO.has(key)) input.value = value;
-      grid.append(h('div', { class: `field${key === 'address' ? ' wide' : ''}` }, h('label', { for: id }, label), input));
+      grid.append(h('div', { class: `field${key === 'address' || essay ? ' wide' : ''}` }, h('label', { for: id }, label), input));
     }
     fs.append(grid);
     form.append(fs);

@@ -497,7 +497,7 @@ async function getBank(env) {
 
 async function saveProfile(env, body) {
   const profile = {};
-  for (const [key] of PROFILE_FIELDS) profile[key] = String(body[key] ?? '').trim().slice(0, 500);
+  for (const [key] of PROFILE_FIELDS) profile[key] = String(body[key] ?? '').trim().slice(0, key.startsWith('essay_') ? 4000 : 500);
   await setKV(env, 'profile', profile);
   return json({ ok: true, profile });
 }
