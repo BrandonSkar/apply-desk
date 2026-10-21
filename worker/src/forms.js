@@ -179,7 +179,7 @@ const ASHBY_QUERY = `query ApiJobPosting($organizationHostedJobsPageName: String
 }`;
 
 const ASHBY_TYPES = {
-  String: 'text', Email: 'text', Phone: 'text', Number: 'text', Location: 'text', Date: 'text',
+  String: 'text', Email: 'text', Phone: 'text', Number: 'text', Location: 'text', Date: 'text', Url: 'text',
   LongText: 'textarea', Boolean: 'select', ValueSelect: 'select', MultiValueSelect: 'multiselect', File: 'file',
 };
 
