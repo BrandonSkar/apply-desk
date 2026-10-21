@@ -123,6 +123,9 @@ const AUTO_RULES = [
   [/(government|public|foreign) official|official of (any|a) government|member of the military|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
   [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
+  // Sponsorship before work authorization: "Do you require sponsorship ... for your right to work in your current
+  // location?" is a sponsorship question. "Authorized to work without sponsorship" is an authorization one.
+  [/^(?!.*without[^?]{0,40}sponsor).*sponsor/i, (p) => yesNo(p.needs_sponsorship)],
   [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
   // "Do you have unrestricted work authorization in the US?" (but not "...require sponsorship to obtain work authorization")
   [/^(?!.*sponsor).*(work authori[sz]ation|authori[sz]ation to work|employment authori[sz]ation|authori[sz]ed for employment)/i,
@@ -130,7 +133,6 @@ const AUTO_RULES = [
   [/eligible to (begin|start) (employment|work)|legally (eligible|authori[sz]ed) to (begin|start)/i, (p) => yesNo(p.work_authorized)],
   [/(country|region).{0,30}citizenship|citizenship.{0,30}(country|region)|country of citizenship/i,
     (p) => (p.citizenship ? [p.citizenship, /^united states of america$/i.test(p.citizenship) ? null : 'United States of America', /^united states/i] : null)],
-  [/sponsor/i, (p) => yesNo(p.needs_sponsorship)],
   [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],
   [/(countr(y|ies)).{0,60}(anticipate|plan|intend|expect|will be).{0,20}work/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
   [/(country|countries).{0,40}(resid(e|ing|ence)|liv(e|ing)|located|based)|(resid(e|ing)|liv(e|ing)|located|based).{0,30}country|current country|country of residence/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
@@ -193,6 +195,9 @@ const SUGGESTED_RULES = [
 
 // Written questions answered from the profile's reusable answers. Tested against the label with the company's
 // name replaced by {company}; answers can use {company} too. Shown under "Check these" so you can tailor them.
+// "Why Langfuse?", "Why ClickHouse Cloud?": a bare "why <Name>?" question.
+const WHY_NAME = /^[Ww]hy\s+([A-Z][\w.&'-]*(?:\s+[A-Z][\w.&'-]*){0,3})\s*\?$/;
+
 const ESSAY_RULES = [
   [/\bwhy\b[^?]{0,25}\{company\}|\{company\}('s)? mission|excit\w*[^?]{0,60}(\{company\}|mission|company|role|team)|what (draws|attracts|interests|excites) you|why (do you want to|are you interested|this (role|company|team)|now\b|us\b|join)/i, 'essay_why'],
   [/most impactful|proud\w* of|(something|thing|project) you('ve| have)? (built|shipped|made)|tell us about a project/i, 'essay_built'],
@@ -379,10 +384,13 @@ export function autofill(form, profile, bank = new Map(), company = '') {
     if (done) continue;
 
     if (q.type === 'textarea' || q.type === 'text') {
-      const label = company ? q.label.replace(new RegExp(escapeRe(company), 'gi'), '{company}') : q.label;
+      // "Why Langfuse?" on a ClickHouse posting: a product or team can go by its own name; answer for that name.
+      const named = WHY_NAME.exec(q.label.trim());
+      const who = named && !/^(do|are|is|should|would|did|does|have|this|now|us|we|you)$/i.test(named[1]) ? named[1] : company;
+      const label = who ? q.label.replace(new RegExp(escapeRe(who), 'gi'), '{company}') : q.label;
       const rule = ESSAY_RULES.find(([re]) => re.test(label));
       const answer = rule && profile[rule[1]];
-      if (answer && answer.trim()) { set(fromBank(answer, company), 'suggested'); continue; }
+      if (answer && answer.trim()) { set(fromBank(answer, who), 'suggested'); continue; }
     }
 
     if (q.section === 'demographic' && (q.type === 'select' || q.type === 'multiselect')) {

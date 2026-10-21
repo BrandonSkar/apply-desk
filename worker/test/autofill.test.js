@@ -301,6 +301,10 @@ test('work authorization vs. sponsorship vs. "have you worked at" wording', () =
       sel('c', 'Have you previously worked at Stripe?'),
       sel('d', 'Are you currently employed by a Microsoft subsidiary?'),
       { name: 'e', label: 'How long have you been working with Python or Golang in a professional setting?', type: 'text', required: true },
+      // ClickHouse: a sponsorship question that also says "right to work".
+      sel('f', 'Do you require sponsorship by an employer for your right to work in your current location?'),
+      sel('g', 'Are you legally authorized to work in the United States without the need for visa sponsorship?'),
+      sel('h', 'Will you now or in the future require sponsorship for employment visa status (e.g., H-1B, O-1, etc.)?'),
     ],
   };
   const { values } = autofill(form, { ...profile, work_authorized: 'Yes', needs_sponsorship: 'No' });
@@ -309,6 +313,9 @@ test('work authorization vs. sponsorship vs. "have you worked at" wording', () =
   assert.equal(values.c, 'No');
   assert.equal(values.d, 'No');
   assert.notEqual(values.e, 'No');
+  assert.equal(values.f, 'No');
+  assert.equal(values.g, 'Yes');
+  assert.equal(values.h, 'No');
 });
 
 test('written questions use the profile answers (with the company name), plus location and country of residence', () => {
@@ -341,6 +348,11 @@ test('written questions use the profile answers (with the company name), plus lo
   assert.equal(bucket.f, 'open');
   assert.equal(values.g, 'Auburn, WA');
   assert.equal(values.h, 'United States');
+
+  // A product with its own name on the parent company's board ("Why Langfuse?" at ClickHouse).
+  const named = autofill({ questions: [t('a', 'Why Langfuse?'), t('b', 'Why do you want to join?')] }, p, new Map(), 'ClickHouse');
+  assert.equal(named.values.a, 'I want to work at Langfuse because of its product.');
+  assert.equal(named.values.b, 'I want to work at ClickHouse because of its product.');
 });
 
 test('pickOption and pickYears', () => {
