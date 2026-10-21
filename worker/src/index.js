@@ -73,7 +73,7 @@ async function route(request, env, ctx) {
     if (method !== 'GET' && !(request.headers.get('content-type') || '').includes('application/json')) {
       return json({ error: 'Send JSON.' }, 415);
     }
-    return api(request, env, path.slice('/jobs/api'.length), url);
+    return api(request, env, path.slice('/jobs/api'.length), url, ctx);
   }
 
   const session = await hasSession(env, request);
@@ -86,7 +86,7 @@ async function route(request, env, ctx) {
 
 // ---------- API ----------
 
-async function api(request, env, path, url) {
+async function api(request, env, path, url, ctx) {
   const method = request.method;
   const body = method === 'GET' ? {} : await readJSON(request);
   if (body === null) return json({ error: 'Body must be JSON (max 200 KB).' }, 400);
