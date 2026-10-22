@@ -161,6 +161,24 @@ async function findId(page, q) {
   return null;
 }
 
+// Tick a checkbox or radio. Microsoft's are custom controls that show the change a moment after the click, so
+// each try waits for it before the next way of clicking (the box itself, its label, the space bar).
+async function setChecked(page, input) {
+  const checked = () => input.isChecked().catch(() => false);
+  const id = await input.getAttribute('id');
+  const ways = [
+    () => input.click({ force: true }),
+    () => page.locator(`label[for="${id}"]`).first().click(),
+    async () => { await input.focus(); await page.keyboard.press('Space'); },
+  ];
+  for (const way of ways) {
+    if (await checked()) return;
+    await way().catch(() => {});
+    for (let i = 0; i < 6 && !(await checked()); i++) await sleep(250);
+  }
+  if (!(await checked())) throw new Error('the box won’t stay checked');
+}
+
 // A radio or checkbox option: by the id read earlier, else by its group name and label.
 async function optionInput(page, q, label) {
   const opt = (q.options || []).find((o) => o.label === label);
@@ -222,8 +240,8 @@ export async function fill(page, { job, form, answers }) {
         for (const label of labels) {
           const input = await optionInput(page, q, label);
           await input.scrollIntoViewIfNeeded().catch(() => {});
-          await input.check({ force: true });
-          await sleep(200);
+          await setChecked(page, input);
+          await sleep(300);
         }
       } else {
         const id = await findId(page, q);
