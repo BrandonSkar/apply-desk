@@ -1,21 +1,53 @@
 // Fills Greenhouse application forms (job-boards.greenhouse.io). Field ids match the question names from
 // Greenhouse's public API: text fields are inputs, single choices are searchable dropdowns, multi choices
 // are checkboxes, demographic questions use the question id.
-import { byId, checkValues, isEmpty, pickCombo, pickLocation, visibleTexts, waitOutcome } from './common.js';
+import path from 'node:path';
+import { byId, checkValues, isEmpty, pickCombo, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
+
+// The phone number's country dropdown. Picked before the phone number so it's read as a US number, and checked:
+// a pick made while the page is still loading doesn't stick.
+async function setPhoneCountry(page) {
+  const country = page.locator('#country');
+  if (!(await country.count())) return true;
+  // Once picked, the box shows the dialing code ("+1") rather than the country name.
+  const picked = async () => /united states|\+\s?1\b/i.test(await country.evaluate((el) => el.closest('.select__control')?.innerText || '').catch(() => ''));
+  for (let i = 0; i < 3; i++) {
+    if (await picked()) return true;
+    await pickCombo(page, country, 'United States').catch(() => {});
+    await sleep(500);
+  }
+  return picked();
+}
+
+// Attach the resume and wait for its file name to show. Too early, Greenhouse's uploader isn't ready ("Cannot read
+// properties of undefined (reading 'uploadFile')") and nothing attaches, so it tries again.
+async function uploadResume(page, resumePath) {
+  const name = path.basename(resumePath);
+  const attached = () => page.getByText(name, { exact: false }).first().isVisible().catch(() => false);
+  for (let i = 0; i < 3; i++) {
+    if (await attached()) return true;
+    const input = page.locator('#resume');
+    if (await input.count()) await input.setInputFiles(resumePath).catch(() => {});
+    for (let t = 0; t < 20 && !(await attached()); t++) await sleep(500);
+    if (await attached()) return true;
+    await sleep(2000);
+  }
+  return false;
+}
 
 export async function fill(page, { form, answers, resumePath, prefs = {} }) {
   await page.locator('#first_name').waitFor({ timeout: 45_000 });
+  // Let the page finish loading: the uploader and dropdowns aren't ready the moment the form shows.
+  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
   const missing = [];
 
-  // Phone country first, so the phone number is read as a US number.
-  const country = page.locator('#country');
-  if (await country.count()) await pickCombo(page, country, 'United States').catch(() => {});
+  if (!(await setPhoneCountry(page))) missing.push('Country (for the phone number: pick United States)');
 
   for (const q of form.questions) {
     const v = answers[q.name];
     try {
       if (q.kind === 'resume') {
-        await page.locator('#resume').setInputFiles(resumePath);
+        if (!(await uploadResume(page, resumePath))) missing.push('Resume/CV (the upload didn’t take: attach it in the helper window)');
         continue;
       }
       if (isEmpty(v)) {
@@ -37,7 +69,9 @@ export async function fill(page, { form, answers, resumePath, prefs = {} }) {
           page.locator('[id^="react-select-candidate-location"][id$="listbox"] [role="option"]'));
         continue;
       }
-      const id = q.domId || q.name;
+      let id = q.domId || q.name;
+      // A long multi-choice list ("In which country do you have citizenship?") is a dropdown whose id ends in "[]".
+      if (q.type === 'multiselect' && !(await page.locator(byId(id)).count()) && (await page.locator(byId(`${id}[]`)).count())) id = `${id}[]`;
       const boxes = page.locator(`input[type=checkbox][name="${q.name}"]`);
       const target = q.type === 'multiselect' && (await boxes.count()) ? boxes.first() : page.locator(byId(id)).first();
       // Some optional questions only appear after another answer (e.g. race after ethnicity). Skip them if hidden.
