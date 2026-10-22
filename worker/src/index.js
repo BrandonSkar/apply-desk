@@ -222,7 +222,7 @@ async function next(env, lane) {
     const form = await ensureForm(env, job, maxYears);
     if (!form || (await capReached(env, job, form, settings))) continue;
     const profile = await getProfile(env);
-    const fill = autofill(form, profile, await getBank(env), job.company);
+    const fill = autofill(form, profile, await getBank(env), job.company, { applied: await appliedCompanies(env) });
     await withDrafts(env, job, form, fill, profile);
     // Auto-send leaves the job on your screen to you.
     await setKV(env, 'showing', { id: job.id, at: now() });
@@ -299,11 +299,12 @@ async function draftAhead(env, currentId = '', { loadForms = true } = {}) {
   const { results } = await (await queueQuery(env, 'auto', DRAFT_AHEAD, currentId)).all();
   const profile = await getProfile(env);
   const bank = await getBank(env);
+  const applied = await appliedCompanies(env);
   await Promise.all(results.map(async (job) => {
     if (job.drafts || (!loadForms && !job.form)) return;
     const form = await ensureForm(env, job, maxYears);
     if (!form || (await capReached(env, job, form, settings))) return;
-    const questions = draftable(form, autofill(form, profile, bank, job.company));
+    const questions = draftable(form, autofill(form, profile, bank, job.company, { applied }));
     if (questions.length) await makeDrafts(env, job, form, profile, questions, false);
   }));
 }
@@ -334,7 +335,7 @@ async function saveAnswers(env, id, body) {
   if (job.status !== 'new') return json({ error: 'This application was already sent. It’s on the Sent tab.' }, 409);
 
   const form = JSON.parse(job.form);
-  const fill = autofill(form, await getProfile(env), await getBank(env), job.company);
+  const fill = autofill(form, await getProfile(env), await getBank(env), job.company, { applied: await appliedCompanies(env) });
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
   const answers = { ...fill.values };
   for (const q of form.questions) {
@@ -561,10 +562,11 @@ async function autoSendNext(env) {
   await setKV(env, 'autosendCursor', batch.length < AUTOSEND_BATCH ? 0 : cursor + AUTOSEND_BATCH);
   const profile = await getProfile(env);
   const bank = await getBank(env);
+  const applied = await appliedCompanies(env);
   for (const job of batch) {
     const form = await ensureForm(env, job, settings.maxYearsRequired || 99);
     if (!form || (await capReached(env, job, form, settings))) continue;
-    const answers = autoAnswers(form, autofill(form, profile, bank, job.company));
+    const answers = autoAnswers(form, autofill(form, profile, bank, job.company, { applied }));
     if (!answers) continue;
     const t = now();
     const r = await env.DB.prepare(
@@ -790,6 +792,14 @@ async function getSettings(env) {
 
 async function getProfile(env) {
   return { ...EMPTY_PROFILE, ...(await getKV(env, 'profile', {})) };
+}
+
+// Companies you've applied to (sent, submitted or applied by hand), for "Have you previously applied to ...?".
+async function appliedCompanies(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT company FROM jobs WHERE status IN ('ready', 'submitting', 'needs_you', 'submitted', 'applied_manual')`,
+  ).all();
+  return results.map((r) => r.company);
 }
 
 async function getBank(env) {

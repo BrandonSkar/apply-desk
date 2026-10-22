@@ -123,6 +123,13 @@ const AUTO_RULES = [
   [/(government|public|foreign) official|official of (any|a) government|member of the military|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
   [/(currently|previously|ever|formerly|have you|are you).{0,40}(work(ed|ing)?|employ(ed)?|serv(ed|ing)).{0,40}(government|federal|state agency|public sector|municipal)/i, government],
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
+  // "Have you held H-1B status, or had an H-1B petition approved...?": not for a US citizen.
+  [/h-?1b/i, (p) => (/^(united states|usa?\b|u\.s\.)/i.test(p.citizenship || '') ? [NO, 'No'] : null)],
+  // "Would you like to be considered for future opportunities?", "keep my resume on file": yes, more chances.
+  [/considered for (other|future)|future (opportunit|opening|role|position|job)|keep (your|my) (resume|information|application|profile|details) on file|talent (pool|community|network)/i,
+    () => [YES, /^yes/i, /\b(please|keep me|consider me)\b/i, 'Yes']],
+  [/non-?compet|non-?solicit|restrictive covenant|agreement.{0,80}(preclude|restrict|prevent|limit).{0,40}(employment|working|work)/i,
+    (p) => yesNo(p.non_compete)],
   // Sponsorship before work authorization: "Do you require sponsorship ... for your right to work in your current
   // location?" is a sponsorship question. "Authorized to work without sponsorship" is an authorization one.
   [/^(?!.*without[^?]{0,40}sponsor).*sponsor/i, (p) => yesNo(p.needs_sponsorship)],
@@ -162,7 +169,12 @@ const SUGGESTED_RULES = [
   [/^if (yes|so)\b/i, () => [/^n\/?a\b|not applicable|^none/i, 'N/A']],
   [/(citizen|resident) of any of the following|sanctioned|embargoed/i, () => [NO, 'No']],
   [/(live|located|based|reside).{0,25}(in|near|around).{0,30}(seattle|bellevue|redmond|puget|washington|\bwa\b)/i, (p) => (inWA(p) ? [YES, 'Yes'] : yesNo(p.willing_to_relocate))],
+  // "Are you open to relocation? Choose a location from the list" / "Which office would you prefer?" with a list
+  // of offices: the one near you isn't a move, so it comes first; then your relocation answer; then remote.
+  [/relocat|which (office|location)|(preferred|preference).{0,20}(office|location)|office location/i,
+    (p) => (inWA(p) ? [/seattle/i, /bellevue|redmond|kirkland/i, /washington(?!,? ?d\.?c)/i] : null), true],
   [/relocat/i, (p) => yesNo(p.willing_to_relocate)],
+  [/which (office|location)|(preferred|preference).{0,20}(office|location)|office location/i, () => [/\bremote\b/i], true],
   [/outside (of )?the (us|u\.s\.|united states).{0,80}(12|twelve) (consecutive )?months|(12|twelve) consecutive months.{0,80}outside/i, () => [NO, 'No']],
   [/permanent resident.{0,60}(other|another) country/i, () => [NO, 'No']],
   [/(do you have|have you (earned|completed)|do you hold).{0,20}\b(a|an)\b.{0,10}(bachelor|master|associate)/i,
@@ -170,7 +182,8 @@ const SUGGESTED_RULES = [
       const level = /bachelor/i.test(q.label) ? /bachelor|master|ph\.?d|doctor/i : /master/i.test(q.label) ? /master|ph\.?d|doctor/i : /associate|bachelor|master|ph\.?d|doctor/i;
       return level.test(p.degree || '') ? [YES, 'Yes'] : null;
     }],
-  [/how many years|years of.{0,40}experience|experience.{0,20}years|total.{0,40}(professional|software|development|engineering).{0,200}experience/i,
+  // Work experience, not "How many years have you been active on the platform?" (a user of the product).
+  [/^(?!.*(active on|on the platform|been using|using (our|the)|member of|customer|subscriber|stream(ing|er)|watch)).*(how many years|years of.{0,40}experience|experience.{0,20}years|total.{0,40}(professional|software|development|engineering).{0,200}experience)/i,
     (p) => ({ years: p.years_experience })],
   [/salary|compensation|pay (expectation|requirement|range)|expected pay/i, (p) => p.desired_salary],
   [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
@@ -178,9 +191,8 @@ const SUGGESTED_RULES = [
   [/\breferr(ed|al)|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
   // "Have you worked at X?", "previously employed by X": needs at/for/by/with, so "work authorization" and
   // "have you been working with Python" don't count.
-  [/(previously|ever|currently|formerly|have you).{0,40}\b(work(ed)?|employed)\b.{0,25}\b(at|for|by|with)\b|former employee|current employee/i,
+  [/(previously|ever|currently|formerly|have you).{0,40}\b(work(ed)?|employed)\b.{0,25}\b(at|for|by|with)\b|former employee|current employee|\b(are|were) you (currently |ever |previously )?(been )?(a|an) .{0,30}\bemployee\b/i,
     () => [NO, /\b(have not|haven.t|never|not previously|not been)\b/i, 'No']],
-  [/non-?compete|non-?solicit|restrictive covenant/i, () => [NO, 'No']],
   [/accommodation/i, () => [NO, 'No']],
   [/(able|willing|comfortable).{0,30}(work|commute|come).{0,40}(office|on-?site|hybrid|in person|days)/i, () => [YES, 'Yes']],
   [/time ?zone/i, () => [/pacific/i, /\bPST\b|\bPT\b/, 'Pacific Time']],
@@ -319,7 +331,36 @@ function fitBanked(q, value) {
  * @param bank    Map of bankKey -> stored answer (already JSON-parsed)
  * @param company the job's company, for {company} substitution
  */
-export function autofill(form, profile, bank = new Map(), company = '') {
+// "Have you previously applied to Amazon or any Amazon subsidiary?": answered from your own history.
+const APPLIED_BEFORE = /\b(previously|ever|already|before|in the past|prior)\b.{0,60}\bappl(ied|ication)|\bappl(ied|ications?)\b.{0,60}\b(previously|before|in the past|prior)\b|have you (ever )?(applied|submitted an application)/i;
+// Companies that count as one for "...or any of its subsidiaries / affiliates".
+const FAMILIES = [
+  ['amazon', 'aws', 'amazon web services', 'twitch', 'zoox', 'audible', 'whole foods', 'ring', 'zappos', 'imdb', 'one medical', 'kuiper'],
+  ['microsoft', 'linkedin', 'github', 'activision', 'blizzard', 'xbox', 'nuance'],
+  ['google', 'alphabet', 'youtube', 'waymo', 'deepmind', 'fitbit'],
+  ['meta', 'facebook', 'instagram', 'whatsapp', 'oculus'],
+];
+export const companyKey = (name) => String(name || '').toLowerCase()
+  .replace(/[.,'’()]/g, ' ')
+  .replace(/\b(inc|llc|ltd|corp|corporation|co|company|technologies|technology|usa|us|io|the|group|holdings)\b/g, ' ')
+  .replace(/\s+/g, ' ').trim();
+
+export function appliedBefore(label, company, applied) {
+  const text = ` ${companyKey(label)} `;
+  const mentions = (name) => text.includes(` ${name} `);
+  const self = companyKey(company);
+  const targets = new Set([self]);
+  for (const family of FAMILIES) {
+    // The family is in play when the question names another of its companies ("Amazon" on a Twitch form), or asks
+    // about this company's subsidiaries / affiliates / parent. "Have you applied to Twitch?" is just Twitch.
+    if (family.some((n) => n !== self && mentions(n)) || (family.includes(self) && /subsidiar|affiliate|parent|family of/i.test(label))) {
+      for (const name of family) targets.add(name);
+    }
+  }
+  return [...applied].some((a) => targets.has(companyKey(a)));
+}
+
+export function autofill(form, profile, bank = new Map(), company = '', { applied } = {}) {
   const values = {};
   const bucket = {};
   const tailor = []; // saved written answers Claude may rewrite for this job
@@ -353,6 +394,11 @@ export function autofill(form, profile, bank = new Map(), company = '') {
       // Opted out and the only choice is "I agree": leave it unchecked.
       else bucket[q.name] = q.required ? 'open' : 'auto';
       continue;
+    }
+
+    if (applied && APPLIED_BEFORE.test(q.label)) {
+      const v = fit(q, appliedBefore(q.label, company, applied) ? [YES, 'Yes'] : [NO, /\b(have not|haven.t|never|not previously)\b/i, 'No']);
+      if (v) { set(v, 'auto'); continue; }
     }
 
     let done = false;

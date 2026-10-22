@@ -395,6 +395,40 @@ test('autoAnswers: only applications answered entirely from the profile and past
   assert.equal(autoAnswers({ questions: base }, guessed), null);
 });
 
+test('Twitch form: applied-before from your history, H-1B, future roles, non-compete, platform years, office', () => {
+  const yn = [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }];
+  const sel = (name, label, options = yn) => ({ name, label, type: 'select', required: true, options: options.map((l) => (typeof l === 'string' ? { label: l, value: l } : l)) });
+  const form = { questions: [
+    sel('amzn', 'Have you previously applied to Amazon or any Amazon subsidiary?'),
+    sel('self', 'Have you applied to Twitch before?'),
+    sel('emp', 'Are you currently a Twitch employee?'),
+    sel('nc', 'Are you subject to a non-competition agreement or other agreement that would preclude or restrict your employment at Amazon?'),
+    sel('h1b', 'Have you held H-1B status, or had an H-1B petition approved on your behalf, within the preceding 6 years for an employer other than a cap exempt institution?'),
+    sel('future', 'Would you like to be considered for future opportunities at Twitch when you apply?'),
+    sel('platform', 'How many years have you been active on the platform?', ['Less than 6 months', '1-2 years', '3-5 years', '5+ years']),
+    sel('office', 'Are you open to relocation?', ['San Francisco, CA', 'Seattle, WA', 'New York, NY', 'Not open to relocation']),
+    sel('years', 'How many years of professional software engineering experience do you have?', ['0-2', '3-5', '6+']),
+  ] };
+  const p = { ...EMPTY_PROFILE, ...profile, citizenship: 'United States of America', years_experience: '4' };
+  const { values, bucket } = autofill(form, p, new Map(), 'Twitch', { applied: ['Amazon', 'DoorDash USA'] });
+  assert.equal(values.amzn, 'Yes');
+  assert.equal(values.self, 'No'); // Amazon applications don't count as Twitch ones
+  assert.equal(values.emp, 'No');
+  assert.equal(values.nc, 'No');
+  assert.equal(values.h1b, 'No');
+  assert.equal(values.future, 'Yes');
+  assert.equal(values.platform, undefined); // not work experience
+  assert.equal(values.office, 'Seattle, WA');
+  assert.equal(values.years, '3-5');
+  assert.equal(bucket.amzn, 'auto');
+
+  const fresh = autofill(form, p, new Map(), 'Twitch', { applied: ['DoorDash USA'] });
+  assert.equal(fresh.values.amzn, 'No');
+  // Names are matched loosely ("DoorDash USA" is DoorDash).
+  const dd = autofill({ questions: [sel('x', 'Have you ever applied to DoorDash in the past?')] }, p, new Map(), 'DoorDash', { applied: ['DoorDash USA'] });
+  assert.equal(dd.values.x, 'Yes');
+});
+
 test('pickOption and pickYears', () => {
   const opts = ['No, I will not require sponsorship', 'Yes, I will'].map((l) => ({ label: l, value: l }));
   assert.equal(pickOption(opts, [/^\s*no\b/i]), 'No, I will not require sponsorship');
