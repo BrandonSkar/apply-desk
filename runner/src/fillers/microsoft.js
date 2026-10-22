@@ -199,6 +199,8 @@ async function optionInput(page, q, label) {
   return page.locator(`[id="${id}"]`);
 }
 
+// Choose `label` in a dropdown. Some allow several choices (the location question) and clicking a chosen option
+// un-chooses it, which hides the questions it brought up; so an option already marked chosen is left alone.
 async function pickDropdown(page, id, label) {
   const input = page.locator(`[id="${id}"]`);
   await input.scrollIntoViewIfNeeded();
@@ -216,7 +218,15 @@ async function pickDropdown(page, id, label) {
   const texts = (await options.allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
   const i = texts.indexOf(label);
   if (i < 0) throw new Error(`no option "${label}"`);
+  if ((await options.nth(i).getAttribute('aria-selected')) === 'true') {
+    await page.keyboard.press('Escape');
+    await sleep(300);
+    return;
+  }
   await options.nth(i).click();
+  await sleep(500);
+  // A list that allows several choices stays open after a click.
+  if (await page.locator(`[id="${listId}"]`).isVisible().catch(() => false)) await page.keyboard.press('Escape');
   await sleep(300);
 }
 
@@ -234,10 +244,14 @@ export async function fill(page, { job, form, answers }) {
     const labels = Array.isArray(v) ? v : [v];
     try {
       if (q.control === 'dropdown') {
-        if (q.preset === labels[0]) continue;
         const id = await findId(page, q);
         if (!id) throw new Error('field not found');
+        // What the page shows now, not what it showed when the questions were read: a saved draft can have had
+        // the answer then and lost it since (a blank "Where would you like to apply?" hides the work questions).
+        if ((await page.locator(`[id="${id}"]`).inputValue().catch(() => '')).trim() === labels[0]) continue;
         await pickDropdown(page, id, labels[0]);
+        // Some answers open more questions (the location brings up the work authorization ones).
+        await sleep(1000);
       } else if (q.control === 'radio' || q.control === 'checkbox') {
         for (const label of labels) {
           const input = await optionInput(page, q, label);
