@@ -30,6 +30,8 @@ async function open(page, job) {
   }
   if (/already applied|you have applied|application (was|has been) submitted/i.test(text)) return 'applied';
   if (/no longer (available|accepting)|position (is )?(closed|filled)|not found/i.test(text)) return 'closed';
+  // A closed posting's apply link lands on the job search instead of the application.
+  if (!/\/careers\/apply/i.test(page.url()) || /sort: match score|\d[\d,]* jobs\b/i.test(text)) return 'closed';
   throw new Error('The Microsoft application page didn’t load as expected.');
 }
 
