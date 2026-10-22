@@ -208,14 +208,14 @@ export async function waitOutcome(page, { isDone, captcha, errors }, timeoutMs =
   return 'unknown';
 }
 
-export async function visibleTexts(locator, max = 5) {
+export async function visibleTexts(locator, max = 5, chars = 120) {
   const out = [];
   const n = Math.min(await locator.count(), 20);
   for (let i = 0; i < n && out.length < max; i++) {
     const el = locator.nth(i);
     if (await el.isVisible()) {
       const t = (await el.innerText()).trim();
-      if (t) out.push(t.slice(0, 120));
+      if (t) out.push(t.slice(0, chars));
     }
   }
   return out;

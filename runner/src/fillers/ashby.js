@@ -23,19 +23,23 @@ function toDate(value) {
 }
 
 // Pick `label` in a choice question: radio/checkbox groups have a <label> per option; long lists are a dropdown.
+// Options are clicked with the mouse: Ashby only records an answer from real clicks and typing.
 async function chooseByLabel(page, wrapper, label) {
-  const ok = await wrapper.evaluate((el, label) => {
+  const forId = await wrapper.evaluate((el, label) => {
     const want = label.trim();
     for (const l of el.querySelectorAll('label[for]')) {
       if (l.innerText.trim() !== want) continue;
       const input = document.getElementById(l.getAttribute('for'));
       if (!input || input.type === 'text') continue;
-      if (!input.checked) input.click();
-      return true;
+      return input.checked ? '' : l.getAttribute('for');
     }
-    return false;
+    return null;
   }, label);
-  if (ok) return;
+  if (forId === '') return; // already chosen
+  if (forId) {
+    await wrapper.locator(`label[for="${forId.replace(/["\\]/g, '\\$&')}"]`).click();
+    return;
+  }
   const select = wrapper.locator('select').first();
   if (await select.count()) {
     await select.selectOption({ label });
@@ -79,26 +83,62 @@ export async function fill(page, { form, answers, resumePath }) {
         missing.push(`${q.label} (needs a file)`);
         continue;
       }
-      const values = Array.isArray(v) ? v : [v];
-      if (q.kind === 'location') {
-        await pickLocation(wrapper.locator('input').first(), values[0], page.locator('[role="option"]'));
-      } else if (q.kind === 'date') {
-        const input = wrapper.locator('input').first();
-        await input.fill(toDate(values[0]));
-        await input.press('Enter');
-        await page.keyboard.press('Escape');
-      } else if (q.ashbyType === 'Boolean') {
-        await wrapper.locator(`button[data-option="${/^\s*y/i.test(values[0]) ? 'yes' : 'no'}"]`).click();
-      } else if (q.type === 'select' || q.type === 'multiselect') {
-        for (const label of values) await chooseByLabel(page, wrapper, label);
-      } else {
-        await wrapper.locator('input, textarea').first().fill(String(values[0]));
-      }
+      await answer(page, wrapper, q, v);
+      await sleep(250);
     } catch (err) {
       missing.push(`${q.label} (${err.message.split('\n')[0].slice(0, 80)})`);
     }
   }
   return { missing };
+}
+
+// Put one answer on the page. `again`: the form didn't take it the first time, so type it key by key.
+async function answer(page, wrapper, q, v, again = false) {
+  const values = Array.isArray(v) ? v : [v];
+  if (q.kind === 'location') {
+    await pickLocation(wrapper.locator('input').first(), values[0], page.locator('[role="option"]'));
+  } else if (q.kind === 'date') {
+    const input = wrapper.locator('input').first();
+    await input.fill(toDate(values[0]));
+    await input.press('Enter');
+    await page.keyboard.press('Escape');
+  } else if (q.ashbyType === 'Boolean') {
+    const yes = /^\s*y/i.test(values[0]);
+    // Clicking the other button first makes sure the form sees a change.
+    if (again) await wrapper.locator(`button[data-option="${yes ? 'no' : 'yes'}"]`).click();
+    await wrapper.locator(`button[data-option="${yes ? 'yes' : 'no'}"]`).click();
+  } else if (q.type === 'select' || q.type === 'multiselect') {
+    for (const label of values) await chooseByLabel(page, wrapper, label);
+  } else {
+    const input = wrapper.locator('input, textarea').first();
+    await input.click();
+    if (again) {
+      await input.fill('');
+      await input.pressSequentially(String(values[0]), { delay: 3 });
+    } else {
+      await input.fill(String(values[0]));
+    }
+    await input.blur(); // some forms record a field when you leave it
+  }
+}
+
+// "Missing entry for required field: Why do you want to work at Baseten?" while the page shows an answer there:
+// the form didn't record it. Put those answers in again, the slow way. Returns false when it can't.
+export const missingLabels = (errs) =>
+  [...new Set(errs.flatMap((e) => [...e.matchAll(/missing entry for required field:\s*([^\n]+)/gi)].map((m) => m[1].trim())))];
+
+async function redoMissing(page, errs, ctx) {
+  const labels = missingLabels(errs);
+  if (!labels.length || !ctx?.form) return false;
+  const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  const redo = ctx.form.questions.filter((q) => labels.some((l) => norm(l) === norm(q.label)) && !isEmpty(ctx.answers[q.name]));
+  if (redo.length < labels.length) return false; // one we have no answer for: that's for you
+  for (const q of redo) {
+    await answer(page, box(page, q), q, ctx.answers[q.name], true);
+    await sleep(400);
+  }
+  await sleep(1000);
+  return true;
 }
 
 export async function isDone(page) {
@@ -115,9 +155,13 @@ const captcha = async (page) => {
   return false;
 };
 
-const errors = (page) => visibleTexts(page.locator('[class*="_error_"], [class*="errorMessage"], [role="alert"]'));
+const errors = (page) => visibleTexts(page.locator('[class*="_error_"], [class*="errorMessage"], [role="alert"]'), 10, 600);
 
-export async function submit(page) {
-  await page.getByRole('button', { name: /submit application/i }).click();
-  return waitOutcome(page, { isDone, captcha, errors });
+// `ctx` ({ form, answers }) lets it put back answers the form says are missing, then submit again (twice at most).
+export async function submit(page, ctx) {
+  for (let round = 0; ; round++) {
+    await page.getByRole('button', { name: /submit application/i }).click();
+    const outcome = await waitOutcome(page, { isDone, captcha, errors });
+    if (!outcome.errors || round >= 2 || !(await redoMissing(page, outcome.errors, ctx))) return outcome;
+  }
 }

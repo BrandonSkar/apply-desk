@@ -19,7 +19,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -259,7 +259,7 @@ async function handle({ job, form, answers, prefs = {} }) {
       return wait(page, job, filler);
     }
     await screenshot(page, job, 'filled');
-    const outcome = await filler.submit(page);
+    const outcome = await filler.submit(page, { form, answers });
     if (outcome === 'submitted') return finish(page, job, true);
     if (outcome === 'code') {
       log('  The site emailed a verification code. Enter it on the page or in the helper window.');
