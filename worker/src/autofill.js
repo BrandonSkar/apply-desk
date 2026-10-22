@@ -199,11 +199,15 @@ const SUGGESTED_RULES = [
 const WHY_NAME = /^[Ww]hy\s+([A-Z][\w.&'-]*(?:\s+[A-Z][\w.&'-]*){0,3})\s*\?$/;
 
 const ESSAY_RULES = [
-  [/\bwhy\b[^?]{0,25}\{company\}|\{company\}('s)? mission|excit\w*[^?]{0,60}(\{company\}|mission|company|role|team)|what (draws|attracts|interests|excites) you|why (do you want to|are you interested|this (role|company|team)|now\b|us\b|join)/i, 'essay_why'],
-  [/most impactful|proud\w* of|(something|thing|project) you('ve| have)? (built|shipped|made)|tell us about a project/i, 'essay_built'],
-  [/(hard|difficult|challenging|complex|toughest|tricky) (technical )?(problem|challenge|bug)|a (time|problem) (when )?you (solved|overcame|faced)|technical challenge/i, 'essay_problem'],
-  [/(good|great|strong) fit|why (should we hire|are you a fit)|tell us about yourself|about yourself|what (would|will|can) you bring|introduce yourself/i, 'essay_fit'],
+  [/\bwhy\b[^?]{0,25}\{company\}|\{company\}('s)? mission|excit\w*[^?]{0,60}(\{company\}|mission|company|role|team)|what (draws|attracts|interests|excites) you|why (do you want to|are you interested|this (role|company|team)|now\b|us\b|join)|why (do|would) you (like|want) to (work|join)|why are you (applying|interested)|what made you (decide to )?apply|why (did|do) you (decide to )?apply/i, 'essay_why'],
+  [/most impactful|proud\w* of|proudest|(achievement|accomplishment)s? (you('re| are)|that you('re| are)) (most )?proud|(greatest|biggest|most significant|favorite) (achievement|accomplishment|project)|walk us through (a|an|one|your) (project|achievement|accomplishment)|(something|thing|project) you('ve| have)? (built|shipped|made)|tell us about a project/i, 'essay_built'],
+  [/(hard|difficult|challenging|complex|toughest|tricky) (technical )?(problem|challenge|bug)|(hardest|toughest|most difficult|most challenging) (problem|bug|challenge|project)|a (time|problem) (when )?you (solved|overcame|faced)|challenge you('ve| have)? (faced|overcome|overcame|solved)|technical challenge/i, 'essay_problem'],
+  [/(good|great|strong) fit|why (should we hire|are you a fit)|what makes you (a |the )?(good|great|strong|ideal|right) (fit|candidate)|tell us about yourself|about yourself|what (would|will|can) you bring|introduce yourself|^cover letter$/i, 'essay_fit'],
 ];
+
+// "...and how it relates to the role you are applying for": a saved answer fits, but Claude can tie it to the job
+// (when drafting is on, it rewrites these).
+const TAILOR = /relat\w* to (the|this) (role|position|job|team)|relevant (to|for) (the|this) (role|position|job|team)|appl(y|ies) to (the|this) (role|position|job)|you('re| are) applying for/i;
 
 export function pickOption(options, wanted) {
   if (!options?.length) return null;
@@ -318,6 +322,7 @@ function fitBanked(q, value) {
 export function autofill(form, profile, bank = new Map(), company = '') {
   const values = {};
   const bucket = {};
+  const tailor = []; // saved written answers Claude may rewrite for this job
   for (const q of form?.questions || []) {
     const set = (v, b) => {
       values[q.name] = v;
@@ -390,7 +395,11 @@ export function autofill(form, profile, bank = new Map(), company = '') {
       const label = who ? q.label.replace(new RegExp(escapeRe(who), 'gi'), '{company}') : q.label;
       const rule = ESSAY_RULES.find(([re]) => re.test(label));
       const answer = rule && profile[rule[1]];
-      if (answer && answer.trim()) { set(fromBank(answer, who), 'suggested'); continue; }
+      if (answer && answer.trim()) {
+        set(fromBank(answer, who), 'suggested');
+        if (TAILOR.test(q.label)) tailor.push(q.name);
+        continue;
+      }
     }
 
     if (q.section === 'demographic' && (q.type === 'select' || q.type === 'multiselect')) {
@@ -406,7 +415,7 @@ export function autofill(form, profile, bank = new Map(), company = '') {
 
     bucket[q.name] = q.required ? 'open' : 'optional';
   }
-  return { values, bucket };
+  return { values, bucket, tailor };
 }
 
 // The required questions that still have no answer.

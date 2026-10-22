@@ -349,6 +349,24 @@ test('written questions use the profile answers (with the company name), plus lo
   assert.equal(values.g, 'Auburn, WA');
   assert.equal(values.h, 'United States');
 
+  // Other wordings of the same four questions.
+  const more = autofill({ questions: [
+    t('a', 'Walk us through your proudest achievement and how it relates to the role you are applying for.'),
+    t('b', 'What made you decide to apply?'),
+    t('c', 'What is the toughest bug you have tracked down?'),
+    t('d', 'What makes you a strong candidate for this position?'),
+    t('e', 'Tell us about an accomplishment you are most proud of.'),
+    t('f', 'Describe a project where you used Kubernetes in production.'),
+  ] }, p, new Map(), 'Baseten');
+  assert.equal(more.values.a, 'I built Apply Desk.');
+  assert.equal(more.values.b, 'I want to work at Baseten because of its product.');
+  assert.equal(more.values.c, 'Five platforms, one filler.');
+  assert.equal(more.values.d, 'Four years shipping features.');
+  assert.equal(more.values.e, 'I built Apply Desk.');
+  assert.equal(more.bucket.f, 'open'); // too specific for a saved answer
+  // "...how it relates to the role": the saved answer fills in, and Claude may tie it to the job.
+  assert.deepEqual(more.tailor, ['a']);
+
   // A product with its own name on the parent company's board ("Why Langfuse?" at ClickHouse).
   const named = autofill({ questions: [t('a', 'Why Langfuse?'), t('b', 'Why do you want to join?')] }, p, new Map(), 'ClickHouse');
   assert.equal(named.values.a, 'I want to work at Langfuse because of its product.');

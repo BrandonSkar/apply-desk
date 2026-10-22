@@ -21,6 +21,9 @@ const fill = { values: { name: 'Brandon Skar' }, bucket: { name: 'auto', obs: 'o
 
 test('drafts cover every unanswered question except files, self-ID and choices without options', () => {
   assert.deepEqual(draftable(form, fill).map((q) => q.name), ['obs', 'split', 'ai', 'langs']);
+  // A saved answer the question asks to tie to the role is redrafted; other saved answers are left alone.
+  const tailored = { ...fill, bucket: { ...fill.bucket, obs: 'suggested', split: 'suggested' }, tailor: ['obs'] };
+  assert.deepEqual(draftable(form, tailored).map((q) => q.name), ['obs', 'ai', 'langs']);
 });
 
 test('facts include work history and background, not contact details or self-ID', () => {

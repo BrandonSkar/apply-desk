@@ -45,11 +45,12 @@ const SCHEMA = {
   },
 };
 
-// Questions still waiting for an answer that Claude could write: not files or self-ID, and not already filled.
+// Questions still waiting for an answer that Claude could write: not files or self-ID, and not already filled,
+// except saved written answers the question asks to tie to the job ("...and how it relates to the role").
 export function draftable(form, fill) {
   return form.questions.filter((q) =>
     q.type !== 'file' && q.section !== 'demographic'
-    && !['auto', 'suggested'].includes(fill.bucket[q.name])
+    && (!['auto', 'suggested'].includes(fill.bucket[q.name]) || fill.tailor?.includes(q.name))
     && (!['select', 'multiselect'].includes(q.type) || q.options?.length));
 }
 
