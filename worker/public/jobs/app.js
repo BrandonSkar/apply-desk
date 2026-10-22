@@ -87,10 +87,17 @@ async function loadState() {
     const seen = s.runner?.seen ? Date.now() - Date.parse(s.runner.seen) : Infinity;
     const on = seen < 2 * 60 * 1000;
     const waiting = s.counts.ready + s.counts.submitting;
-    $('#helper').classList.toggle('on', on);
-    $('#helper-text').textContent = on
-      ? waiting ? `Helper: ${waiting} to submit` : 'Helper running'
-      : waiting ? `Helper offline · ${waiting} waiting` : 'Helper offline';
+    $('#helper').classList.toggle('on', on && !s.helperPaused);
+    $('#helper-text').textContent = s.helperPaused
+      ? waiting ? `Helper paused · ${waiting} waiting` : 'Helper paused'
+      : on
+        ? waiting ? `Helper: ${waiting} to submit` : 'Helper running'
+        : waiting ? `Helper offline · ${waiting} waiting` : 'Helper offline';
+    // Pause / Resume works whenever the helper is running on your PC (or was paused).
+    const toggle = $('#helper-toggle');
+    toggle.hidden = !on && !s.helperPaused;
+    toggle.textContent = s.helperPaused ? 'Resume' : 'Pause';
+    toggle.dataset.paused = s.helperPaused ? '1' : '';
 
     // A code someone's waiting on comes first; otherwise any notice from the helper (e.g. signed out of Amazon).
     const codes = s.counts.needs_code;
@@ -129,6 +136,21 @@ function showTab(name) {
 }
 
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+$('#helper-toggle').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const pause = !btn.dataset.paused;
+  btn.disabled = true;
+  try {
+    await post('/helper/pause', { paused: pause });
+    toast(pause ? 'Helper paused: it won’t submit anything until you resume.' : 'Helper resumed: it’s submitting what you’ve sent.');
+    await loadState();
+  } catch (err) {
+    toast(err.message, 'bad');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 $('#alert-go').addEventListener('click', () => {
   showTab('sent');
   setTimeout(() => $('#tab-sent .codebox input')?.focus(), 400);
@@ -138,20 +160,39 @@ $('#alert-go').addEventListener('click', () => {
 
 let current = null;
 
+// Phone mode: only jobs with nothing to answer (review and send). On by default on a phone-sized screen;
+// the choice is remembered on this device.
+function quickMode() {
+  try {
+    const saved = localStorage.getItem('quickMode');
+    if (saved !== null) return saved === '1';
+  } catch {}
+  return matchMedia('(max-width: 700px)').matches;
+}
+
+function quickToggle() {
+  const box = h('input', { type: 'checkbox', checked: quickMode(), onchange: () => {
+    try { localStorage.setItem('quickMode', box.checked ? '1' : '0'); } catch {}
+    renderQueue();
+  } });
+  return h('label', { class: 'check quick-toggle' }, box, 'Only jobs with nothing to answer (review and send)');
+}
+
 async function renderQueue() {
   const panel = $('#tab-queue');
-  panel.replaceChildren(h('div', { class: 'loading' }, 'Finding the next job…'));
+  const quick = quickMode();
+  panel.replaceChildren(quickToggle(), h('div', { class: 'loading' }, quick ? 'Finding a job with nothing to answer…' : 'Finding the next job…'));
   try {
-    current = await api('/next?lane=auto');
+    current = await api(`/next?lane=${quick ? 'quick' : 'auto'}`);
   } catch (err) {
-    panel.replaceChildren(errorCard(err));
+    panel.replaceChildren(quickToggle(), errorCard(err));
     return;
   }
   if (!current.job) {
-    panel.replaceChildren(emptyQueue(current.note));
+    panel.replaceChildren(quickToggle(), emptyQueue(current.note));
     return;
   }
-  panel.replaceChildren(jobCard(current));
+  panel.replaceChildren(quickToggle(), jobCard(current));
   const first = panel.querySelector('.qsection .field input, .qsection .field textarea, .qsection .field select');
   if (first && matchMedia('(min-width: 700px)').matches) first.focus({ preventScroll: true });
 }

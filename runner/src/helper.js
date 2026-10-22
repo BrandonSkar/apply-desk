@@ -19,7 +19,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.7.6';
+const VERSION = '0.8.0';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -41,11 +41,21 @@ const log = (...a) => console.log(new Date().toLocaleTimeString(), ...a);
 
 mkdirSync(cfg.shotsDir, { recursive: true });
 
-const context = await chromium.launchPersistentContext(cfg.profileDir, {
-  channel: cfg.browser,
-  headless: false,
-  viewport: null,
-});
+let context;
+try {
+  context = await chromium.launchPersistentContext(cfg.profileDir, {
+    channel: cfg.browser,
+    headless: false,
+    viewport: null,
+  });
+} catch (err) {
+  // Its browser profile can only be open once: another helper (e.g. the one that started with Windows) has it.
+  if (/ProcessSingleton|already running|in use|lock/i.test(err.message)) {
+    log('Another helper is already running on this PC (its browser has the profile open). This one is closing.');
+    process.exit(0);
+  }
+  throw err;
+}
 context.setDefaultTimeout(15_000);
 
 if (process.argv.includes('--login')) {
@@ -340,6 +350,7 @@ async function autoSend() {
 
 log(`Apply Desk helper ${VERSION}: watching ${cfg.siteUrl}. Leave this running; Ctrl+C to stop.`);
 let lastClaim = 0;
+let wasPaused = false;
 while (!stopping) {
   await restartIfUpdated();
   await checkWaiting();
@@ -352,6 +363,15 @@ while (!stopping) {
       log('Could not reach the site:', err.message);
     }
     await deliver(claim?.outbox);
+    // Paused from the page: stay running, take no work.
+    if (claim?.paused !== wasPaused) {
+      wasPaused = !!claim?.paused;
+      log(wasPaused ? 'Paused from the page. Waiting until you resume.' : 'Resumed.');
+    }
+    if (claim?.paused) {
+      await sleep(POLL_MS);
+      continue;
+    }
     if (claim?.job) {
       await handle(claim);
       lastClaim = 0; // look for the next one right away

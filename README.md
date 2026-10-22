@@ -82,8 +82,13 @@ npm start
 ```
 
 Leave it running while you apply. It restarts itself to load code updates (between applications, never with one
-waiting on you), and it sends the phone notifications. `npm run login` opens the helper's browser so you can sign
-in to job sites it should use.
+waiting on you) and after a crash, and it sends the phone notifications. `npm run login` opens the helper's browser
+so you can sign in to job sites it should use.
+
+To have it start whenever you sign in to Windows, put a shortcut to `runner/start-helper.cmd` in your Startup
+folder (Win+R, `shell:startup`). Then the page's **Pause / Resume** button (next to the helper status) is all you
+need, from any device, as long as the PC is on and awake. On a phone, the Queue shows only jobs with nothing to
+answer (review and send); the switch above the job changes that.
 
 **3. The MCP server** (optional)
 

@@ -116,6 +116,11 @@ async function api(request, env, path, url, ctx) {
     return json({ ok: true, paused: await getKV(env, 'paused', {}) });
   }
   if (path === '/runner/autosend' && method === 'POST') return json(await autoSendNext(env));
+  // The page's Pause / Resume: the helper keeps running on your PC but takes no work while paused.
+  if (path === '/helper/pause' && method === 'POST') {
+    await setKV(env, 'helperPaused', body.paused === true);
+    return json({ ok: true, paused: body.paused === true });
+  }
   if (path === '/holds/release' && method === 'POST') return json(await releaseHold(env, String(body.key || '')));
   if (path === '/notify/test' && method === 'POST') return json(await eveningSummary(env, { force: true, only: body.only }));
   if (path === '/runner/heartbeat' && method === 'POST') {
@@ -161,6 +166,7 @@ async function state(env, since) {
     refresh: await getKV(env, 'refresh', null),
     alert: await getKV(env, 'alert', null),
     paused,
+    helperPaused: await getKV(env, 'helperPaused', false),
     held: Object.entries(held).map(([key, { company, until, reason }]) => ({ key, company, until, reason: reason || 'their limit' })),
     profileReady: !!(profile.first_name && profile.last_name && profile.email && profile.phone),
   };
@@ -210,7 +216,28 @@ async function ensureForm(env, job, maxYears) {
   return form;
 }
 
+// Phone mode: the next job with nothing to answer, every required question filled from your profile and past
+// answers, so it's just review and send. Looks a dozen jobs down the queue.
+const QUICK_LOOKAHEAD = 12;
+async function nextQuick(env) {
+  const settings = await getSettings(env);
+  const { results } = await (await queueQuery(env, 'auto', QUICK_LOOKAHEAD)).all();
+  const profile = await getProfile(env);
+  const bank = await getBank(env);
+  const applied = await appliedCompanies(env);
+  for (const job of results) {
+    const form = await ensureForm(env, job, settings.maxYearsRequired || 99);
+    if (!form || (await capReached(env, job, form, settings))) continue;
+    const fill = autofill(form, profile, bank, job.company, { applied });
+    if (!autoAnswers(form, fill)) continue;
+    await setKV(env, 'showing', { id: job.id, at: now() });
+    return { job: publicJob(job), form, fill };
+  }
+  return { job: null, note: `None of the next ${QUICK_LOOKAHEAD} jobs are ready to send as they are: each has a question for you. Turn off “Only jobs with nothing to answer” to see them.` };
+}
+
 async function next(env, lane) {
+  if (lane === 'quick') return nextQuick(env);
   const settings = await getSettings(env);
   const maxYears = settings.maxYearsRequired || 99;
   // Jobs that drop out while their form loads (closed, over the years limit, a company at its limit) make way
@@ -403,6 +430,7 @@ async function claim(env, body) {
 
   // Phone pushes waiting to go out; the helper sends them (from 0.7 on; older ones would drop them).
   const outbox = /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env);
+  if (await getKV(env, 'helperPaused', false)) return { job: null, paused: true, outbox };
   const job = await env.DB.prepare(`SELECT * FROM jobs WHERE status = 'ready' ORDER BY updated_at ASC LIMIT 1`).first();
   if (!job) return { job: null, outbox };
   const r = await env.DB.prepare(`UPDATE jobs SET status = 'submitting', updated_at = ? WHERE id = ? AND status = 'ready'`).bind(t, job.id).run();
@@ -550,7 +578,7 @@ async function capReached(env, job, form, settings) {
 const AUTOSEND_BATCH = 6;
 async function autoSendNext(env) {
   const settings = await getSettings(env);
-  if (!settings.autoSend) return { job: null };
+  if (!settings.autoSend || (await getKV(env, 'helperPaused', false))) return { job: null };
   const day = new Date(Date.now() - 864e5).toISOString();
   const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM jobs WHERE sent_at >= ?').bind(day).first();
   if (n >= settings.autoSendPerDay) return { job: null, note: 'Daily auto-send limit reached' };
@@ -631,6 +659,7 @@ async function dayInReview(env, settings, day) {
 
 // Amazon and Microsoft: the helper reads a job's questions while you're signed in. Keeps a few ready per site.
 async function claimPrepare(env) {
+  if (await getKV(env, 'helperPaused', false)) return { job: null };
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const { results: counts } = await env.DB.prepare(

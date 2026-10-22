@@ -231,3 +231,7 @@ fieldset > .label { font-weight: 600; font-size: 15px; margin: 16px 0 6px; }
 .holds { list-style: none; margin: 0; padding: 0; }
 .holds li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
 .holds li:first-child { border-top: 0; }
+
+/* Queue: phone mode switch; header: Pause / Resume */
+.quick-toggle { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+.helper .btn-small { margin-left: 4px; padding: 3px 9px; font-size: 13px; }
