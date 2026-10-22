@@ -2,6 +2,17 @@
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The pause between fields. Sites drop answers that arrive faster than a person types, and an application
+// taking a few more seconds costs nothing.
+export const PACE_MS = 500;
+export const pace = () => sleep(PACE_MS);
+
+// After a page loads: wait for its network to go quiet, then a moment more for its scripts to settle.
+export async function settle(page, extraMs = 1500) {
+  await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+  await sleep(extraMs);
+}
+
 export const byId = (id) => `[id="${String(id).replace(/["\\]/g, '\\$&')}"]`;
 export const byName = (name) => `[name="${String(name).replace(/["\\]/g, '\\$&')}"]`;
 

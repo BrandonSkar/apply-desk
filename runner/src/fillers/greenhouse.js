@@ -2,7 +2,7 @@
 // Greenhouse's public API: text fields are inputs, single choices are searchable dropdowns, multi choices
 // are checkboxes, demographic questions use the question id.
 import path from 'node:path';
-import { byId, checkValues, isEmpty, pickCombo, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
+import { byId, checkValues, isEmpty, pace, pickCombo, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
 
 // The phone number's country dropdown. Picked before the phone number so it's read as a US number, and checked:
 // a pick made while the page is still loading doesn't stick.
@@ -45,6 +45,7 @@ export async function fill(page, { form, answers, resumePath, prefs = {} }) {
 
   for (const q of form.questions) {
     const v = answers[q.name];
+    if (!isEmpty(v) || q.kind === 'resume') await pace();
     try {
       if (q.kind === 'resume') {
         if (!(await uploadResume(page, resumePath))) missing.push('Resume/CV (the upload didn’t take: attach it in the helper window)');

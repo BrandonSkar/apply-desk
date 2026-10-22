@@ -1,6 +1,6 @@
 // Fills Lever application forms (jobs.lever.co/<company>/<id>/apply). Inputs use plain names
 // (name, email, cards[<id>][field0], eeo[gender]); choice questions are radios/checkboxes valued by their text.
-import { byName, checkValues, isEmpty, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
+import { byName, checkValues, isEmpty, pace, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
 
 export async function fill(page, { form, answers, resumePath }) {
   await page.locator('input[name="name"]').waitFor({ timeout: 45_000 });
@@ -16,6 +16,7 @@ export async function fill(page, { form, answers, resumePath }) {
   for (const q of form.questions) {
     if (q.kind === 'resume') continue;
     const v = answers[q.name];
+    if (!isEmpty(v)) await pace();
     try {
       if (isEmpty(v)) {
         if (q.required) missing.push(q.label);

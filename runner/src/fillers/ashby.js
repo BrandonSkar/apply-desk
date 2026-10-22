@@ -1,7 +1,7 @@
 // Fills Ashby application forms (jobs.ashbyhq.com/<company>/<job>/application). Every question sits in a
 // wrapper tagged data-field-path="<path>": text inputs, Yes/No buttons (data-option="yes"/"no"), radio or checkbox
 // groups with labels, a location box that suggests matches, and a date picker.
-import { isEmpty, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
+import { isEmpty, pace, pickLocation, sleep, visibleTexts, waitOutcome } from './common.js';
 
 const box = (page, q) => page.locator(`[data-field-path="${q.path}"]`).first();
 
@@ -84,7 +84,7 @@ export async function fill(page, { form, answers, resumePath }) {
         continue;
       }
       await answer(page, wrapper, q, v);
-      await sleep(250);
+      await pace();
     } catch (err) {
       missing.push(`${q.label} (${err.message.split('\n')[0].slice(0, 80)})`);
     }

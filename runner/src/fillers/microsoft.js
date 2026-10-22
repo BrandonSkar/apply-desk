@@ -4,7 +4,7 @@
 //
 // prepare(): read the questions (and each dropdown's choices) so they can show on your page.
 // fill():    put in your answers.        submit(): press "Submit application".
-import { isEmpty, sleep, visibleTexts, waitOutcome } from './common.js';
+import { isEmpty, pace, settle, sleep, visibleTexts, waitOutcome } from './common.js';
 
 export class SignedOutError extends Error {}
 
@@ -14,7 +14,14 @@ async function open(page, job) {
   await page.goto(applyUrl(job), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   const form = page.locator('[id^="Contact_Information_"]').first();
   if (await form.waitFor({ timeout: 30_000 }).then(() => true, () => false)) {
-    await sleep(2500);
+    await settle(page, 2500);
+    // Scroll down through the form and back so every section has rendered before anything is looked up.
+    for (let i = 0; i < 12; i++) {
+      await page.mouse.wheel(0, 900);
+      await sleep(300);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(800);
     return 'form';
   }
   const text = await page.locator('body').innerText().catch(() => '');
@@ -120,28 +127,72 @@ export async function prepare(page, job) {
   return { form: { kind: 'microsoft', questions, description: '' } };
 }
 
-// Find a dropdown's current id by its question text (ids like input-42 can change between page loads).
+// Find a field's current id by its question text (ids like input-42 can change between page loads). Exact text
+// first, then the same text give or take a "*" or a cut-off end.
 function idByLabel(page, label) {
   return page.evaluate((label) => {
     const textOf = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim();
+    const norm = (s) => (s || '').replace(/\*/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const want = norm(label);
+    let loose = null;
     for (const el of document.querySelectorAll('input, textarea')) {
-      if (!el.offsetParent) continue;
-      const byFor = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      const l = textOf(byFor) || (el.getAttribute('aria-labelledby') || '').split(' ').map((i) => textOf(document.getElementById(i))).join(' ').trim();
-      if (l === label) return el.id;
+      if (!el.offsetParent || el.type === 'hidden' || !el.id) continue;
+      const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const l = norm(textOf(byFor) || (el.getAttribute('aria-labelledby') || '').split(' ').map((i) => textOf(document.getElementById(i))).join(' ')
+        || el.getAttribute('aria-label'));
+      if (!l) continue;
+      if (l === want) return el.id;
+      if (!loose && (l.startsWith(want.slice(0, 60)) || want.startsWith(l.slice(0, 60)))) loose = el.id;
+    }
+    return loose;
+  }, label);
+}
+
+// A field's id now: the one read earlier if it's still on the page, else found by its question, trying a few
+// times (scrolling on) in case that part of the form is still rendering.
+async function findId(page, q) {
+  for (let i = 0; i < 6; i++) {
+    if (q.key && !/^input-\d+$/.test(q.key) && (await page.locator(`[id="${q.key}"]`).count())) return q.key;
+    const id = await idByLabel(page, q.label);
+    if (id) return id;
+    await page.mouse.wheel(0, 700);
+    await sleep(1000);
+  }
+  return null;
+}
+
+// A radio or checkbox option: by the id read earlier, else by its group name and label.
+async function optionInput(page, q, label) {
+  const opt = (q.options || []).find((o) => o.label === label);
+  if (!opt) throw new Error(`no option "${label}"`);
+  const byOldId = page.locator(`[id="${opt.value}"]`);
+  if (await byOldId.count()) return byOldId;
+  const id = await page.evaluate(({ name, label }) => {
+    const textOf = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim();
+    for (const r of document.querySelectorAll(`input[name="${CSS.escape(name)}"]`)) {
+      const l = textOf(r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.value;
+      if (l === label) return r.id;
     }
     return null;
-  }, label);
+  }, { name: q.key, label });
+  if (!id) throw new Error('option not found');
+  return page.locator(`[id="${id}"]`);
 }
 
 async function pickDropdown(page, id, label) {
   const input = page.locator(`[id="${id}"]`);
   await input.scrollIntoViewIfNeeded();
-  await input.click();
-  await sleep(600);
-  const listId = await input.getAttribute('aria-controls');
+  // Open it and wait for its choices; a list that didn't open gets one more try.
+  let listId = null;
+  for (let i = 0; i < 2 && !listId; i++) {
+    await input.click();
+    await sleep(800);
+    listId = await input.getAttribute('aria-controls');
+    if (!listId) await page.keyboard.press('Escape');
+  }
   if (!listId) throw new Error('dropdown didn’t open');
   const options = page.locator(`[id="${listId}"] [role="option"]`);
+  await options.first().waitFor({ timeout: 8_000 }).catch(() => {});
   const texts = (await options.allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
   const i = texts.indexOf(label);
   if (i < 0) throw new Error(`no option "${label}"`);
@@ -164,19 +215,31 @@ export async function fill(page, { job, form, answers }) {
     try {
       if (q.control === 'dropdown') {
         if (q.preset === labels[0]) continue;
-        const id = /^input-\d+$/.test(q.key) ? await idByLabel(page, q.label) : q.key;
+        const id = await findId(page, q);
         if (!id) throw new Error('field not found');
         await pickDropdown(page, id, labels[0]);
       } else if (q.control === 'radio' || q.control === 'checkbox') {
         for (const label of labels) {
-          const opt = (q.options || []).find((o) => o.label === label);
-          if (!opt) throw new Error(`no option "${label}"`);
-          await page.locator(`[id="${opt.value}"]`).check({ force: true });
+          const input = await optionInput(page, q, label);
+          await input.scrollIntoViewIfNeeded().catch(() => {});
+          await input.check({ force: true });
+          await sleep(200);
         }
       } else {
-        const id = /^input-\d+$/.test(q.key) ? await idByLabel(page, q.label) : q.key;
-        await page.locator(`[id="${id}"]`).fill(String(labels[0]));
+        const id = await findId(page, q);
+        if (!id) throw new Error('field not found');
+        const input = page.locator(`[id="${id}"]`);
+        await input.scrollIntoViewIfNeeded().catch(() => {});
+        // A field the site locks with a value (your Microsoft account's email) stays as the site has it.
+        if (!(await input.isEditable().catch(() => false))) {
+          if ((await input.inputValue().catch(() => '')).trim()) continue;
+          throw new Error('field is locked');
+        }
+        await input.click();
+        await input.fill(String(labels[0]));
+        await input.blur();
       }
+      await pace();
     } catch (err) {
       missing.push(`${q.label.slice(0, 80)} (${err.message.split('\n')[0].slice(0, 60)})`);
     }

@@ -12,14 +12,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi } from './config.js';
-import { companyLimit, enterCode, limitTexts, needsCode, sleep, uncheckSmsOptIns } from './fillers/common.js';
+import { companyLimit, enterCode, limitTexts, needsCode, settle, sleep, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
 import * as ashby from './fillers/ashby.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.7.2';
+const VERSION = '0.7.3';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -246,6 +246,7 @@ async function handle({ job, form, answers, prefs = {} }) {
   const page = await context.newPage();
   try {
     await page.goto(job.apply_url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await settle(page);
     const { missing, done } = await filler.fill(page, { job, form, answers, resumePath: cfg.resumePath, prefs });
     if (done) return finish(page, job, true); // the site says it's already submitted
     if (!prefs.smsOptIn) {
