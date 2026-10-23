@@ -729,3 +729,6 @@ setInterval(async () => {
   await loadState();
   if (activeTab === 'sent' && !document.hidden) renderSent();
 }, 20000);
+
+// Installing to the home screen needs a service worker; it caches nothing (see sw.js).
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/jobs/sw.js', { scope: '/jobs' }).catch(() => {});

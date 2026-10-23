@@ -43,6 +43,8 @@ const BACKOFF_MS = 3 * 60 * 60 * 1000;
 const STALE_SUBMIT_MS = 20 * 60 * 1000;
 
 const now = () => new Date().toISOString();
+// What a phone fetches to install the page as an app; nothing private, so no sign-in needed.
+const PUBLIC_FILES = new Set(['/jobs/manifest.webmanifest', '/jobs/sw.js', '/jobs/icon-192.png', '/jobs/icon-512.png', '/jobs/icon-maskable-512.png', '/jobs/apple-touch-icon.png']);
 
 export default {
   async fetch(request, env, ctx) {
@@ -80,6 +82,13 @@ async function route(request, env, ctx) {
 
   const session = await hasSession(env, request);
   if (path === '/jobs') return session ? asset(env, request, '/jobs/index.html') : redirect('/jobs/login');
+  if (PUBLIC_FILES.has(path)) {
+    const res = await asset(env, request, path);
+    // The service worker sits at /jobs/sw.js but looks after the page at /jobs (one level up).
+    if (path === '/jobs/sw.js') res.headers.set('service-worker-allowed', '/jobs');
+    if (path === '/jobs/manifest.webmanifest') res.headers.set('content-type', 'application/manifest+json');
+    return res;
+  }
   if (path === '/jobs/app.js' || path === '/jobs/app.css') {
     return session ? asset(env, request, path) : new Response('Not signed in', { status: 401 });
   }
@@ -965,6 +974,7 @@ function loginPage(error = '') {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apply Desk</title><meta name="robots" content="noindex">
+<link rel="manifest" href="/jobs/manifest.webmanifest" crossorigin="use-credentials"><link rel="apple-touch-icon" href="/jobs/apple-touch-icon.png"><link rel="icon" href="/jobs/icon-192.png"><meta name="theme-color" content="#1f5f4a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Apply Desk">
 <style>
 :root{--bg:#f6f5f2;--card:#fff;--text:#1d1c1a;--muted:#6b6862;--line:#e3e0da;--accent:#1f5f4a;--bad:#a33}
 @media (prefers-color-scheme:dark){:root{--bg:#151514;--card:#1f1f1d;--text:#ecebe7;--muted:#a19e97;--line:#34332f;--accent:#5fbf9a;--bad:#e88}}
@@ -986,7 +996,7 @@ ${error ? `<div class="err" role="alert">${error}</div>` : ''}
     headers: {
       'content-type': 'text/html; charset=utf-8',
       ...SECURITY_HEADERS,
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     },
   });
 }
