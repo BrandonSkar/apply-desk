@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autoAnswers, autofill, bankKey, fromBank, looseKey, missingRequired, pickOption, pickYears, toBank } from '../src/autofill.js';
+import { autoAnswers, autofill, bankKey, fromBank, looseKey, missingRequired, pickOption, pickYears, toBank, todayFor } from '../src/autofill.js';
 import { EMPTY_PROFILE } from '../src/defaults.js';
 
 const profile = {
@@ -249,7 +249,7 @@ test('Amazon: experience ranges, degree yes/no, presets from the site, and work 
   const { values, bucket } = autofill(form, p, new Map(), 'Amazon');
   assert.equal(values.a, '4 years to less than 5 years');
   assert.equal(values.b, 'more than 3 years');
-  assert.equal(bucket.c, 'open'); // skill-specific: from your answer bank, or you
+  assert.equal(values.c, 'more than 3 years'); // any skill counts as your total years
   assert.equal(values.d, 'Yes');
   assert.equal(values.e, 'Yes');
   assert.equal(bucket.e, 'auto');
@@ -427,6 +427,134 @@ test('Twitch form: applied-before from your history, H-1B, future roles, non-com
   // Names are matched loosely ("DoorDash USA" is DoorDash).
   const dd = autofill({ questions: [sel('x', 'Have you ever applied to DoorDash in the past?')] }, p, new Map(), 'DoorDash', { applied: ['DoorDash USA'] });
   assert.equal(dd.values.x, 'Yes');
+});
+
+test('SoFi form: home address, today\'s date, FINRA, required SMS consent, commute to the job, degree field', () => {
+  const opts = (...l) => l.map((x) => ({ label: x, value: x }));
+  const sel = (name, label, options = ['Yes', 'No'], type = 'select') => ({ name, label, type, required: true, options: opts(...options) });
+  const text = (name, label) => ({ name, label, type: 'text', required: true });
+  const form = { questions: [
+    sel('auth', 'Are you authorized to lawfully work in the country where this role is located?'),
+    sel('years', "How many year's of experience do you have directly related to this role?", ['0-1 Years', '1-2 Years', '2-3 Years', '3-4 Years', '5+ Years']),
+    sel('sms', 'I acknowledge that by providing my phone number, I agree to receive text messages from SoFi Technologies in relation to this job application. Reply STOP to opt-out.', ['Yes']),
+    sel('emp', 'Are you currently a SoFi or SoFi Tech Solutions (formerly Galileo) employee?'),
+    text('date', "Today's Date of Application (MM/DD/YY Format)"),
+    sel('finra', 'Do you currently hold, or intend to hold, any FINRA licenses if employed by SoFi? (i.e., Series 7, Series 24, etc.)'),
+    sel('licenses', 'What FINRA license(s), if any, do you currently hold?', ['N/A', 'Series 3 (S3)', 'Series 7 (S7)'], 'multiselect'),
+    sel('commute', "Are you currently located within, or planning to relocate to be within, a reasonable commute of any of this job's listed hiring locations?"),
+    text('a1', 'Home Address Line 1'),
+    { name: 'a2', label: 'Home Address Line 2', type: 'text', required: false },
+    text('city', 'Home Address City'),
+    text('state', 'Home Address State'),
+    sel('country', 'Home Address Country', ['United States of America', 'Argentina', 'Canada']),
+    text('field', 'What is your degree in?'),
+    sel('degree', 'What kind of degree do you have, if any?', ["Master's", "Bachelor's", 'No Degree']),
+  ] };
+  const p = { ...profile, address: '100 Main St', city: 'Auburn', state: 'WA', country: 'United States', sms_opt_in: 'No',
+    years_experience: '4', degree: "Bachelor's Degree", discipline: 'Software Development', willing_to_relocate: 'No' };
+  const { values, bucket } = autofill(form, p, new Map(), 'SoFi', { location: 'WA - Seattle' });
+  assert.equal(values.auth, 'Yes');
+  assert.equal(values.years, '3-4 Years');
+  assert.equal(values.sms, 'Yes'); // the form won't send without it
+  assert.equal(values.emp, 'No');
+  assert.match(values.date, /^\d\d\/\d\d\/\d\d$/);
+  assert.equal(values.finra, 'No');
+  assert.deepEqual(values.licenses, ['N/A']);
+  assert.equal(values.commute, 'Yes');
+  assert.equal(values.a1, '100 Main St');
+  assert.equal(values.a2, undefined);
+  assert.equal(values.city, 'Auburn');
+  assert.equal(values.state, 'WA');
+  assert.equal(values.country, 'United States of America');
+  assert.equal(values.field, 'Software Development');
+  assert.equal(values.degree, "Bachelor's");
+  for (const k of ['auth', 'sms', 'date', 'finra', 'licenses', 'commute', 'a1', 'city', 'state', 'country']) assert.equal(bucket[k], 'auto', k);
+
+  // A job you'd have to move for gets your relocation answer, for you to check.
+  const far = autofill(form, p, new Map(), 'SoFi', { location: 'CA - San Francisco' });
+  assert.equal(far.values.commute, 'No');
+  assert.equal(far.bucket.commute, 'suggested');
+});
+
+test('experience with anything is your total years; work authorization for another country is a no', () => {
+  const sel = (name, label, options = yn) => ({ name, label, type: 'select', required: true,
+    options: options.map((l) => (typeof l === 'string' ? { label: l, value: l } : l)) });
+  const rust = ['Less than 1 year', '1 to less than 2 years', '2 to less than 3 years', '3 to less than 4 years', '4 to less than 5 years', '5 years or more'];
+  const form = { questions: [
+    sel('java', 'Do you possess 5 years of experience with programming in Java, Scala, or Python?'),
+    sel('plus', 'Do you have 5+ years of professional experience?'),
+    sel('fin', 'Do you possess 4 years of experience with working in fintech domain?'),
+    sel('spark', 'Do you possess 1 year of experience with Apache Spark or similar modern Big Data technologies?'),
+    sel('sdlc', 'Do you have experience with full software development life cycle, including coding standards and code reviews?'),
+    sel('rust', 'Approximately how long have you actively used Rust to build or contribute to projects?', rust),
+    sel('design', 'Which option best describes your total non-internship design or architecture (design patterns, reliability and scaling) of new and existing systems experience?',
+      ['less than 2 years', '2 years to less than 3 years', '3 years to less than 4 years', '4 years to less than 5 years', 'more than 5 years']),
+    { name: 'react', label: 'How many years of experience do you have with React?', type: 'text', required: true },
+    { name: 'tell', label: 'Tell us about your experience with React.', type: 'textarea', required: true },
+    sel('prior', 'Have you had prior work experience at Stripe?'),
+    sel('ca', 'Are you legally entitled to work in Canada?'),
+    sel('us', 'Are you legally authorized to work in the United States?'),
+  ] };
+  const p = { ...profile, years_experience: '4', citizenship: 'United States of America', work_authorized: 'Yes' };
+  const { values, bucket } = autofill(form, p, new Map(), 'Stripe');
+  assert.equal(values.java, 'No');
+  assert.equal(values.plus, 'No');
+  assert.equal(values.fin, 'Yes');
+  assert.equal(values.spark, 'Yes');
+  assert.equal(values.sdlc, 'Yes');
+  assert.equal(values.rust, '4 to less than 5 years');
+  assert.equal(values.design, '4 years to less than 5 years');
+  assert.equal(values.react, '4');
+  assert.equal(values.tell, undefined);
+  assert.equal(values.prior, 'No'); // a former-employee question
+  assert.equal(bucket.prior, 'suggested');
+  for (const k of ['java', 'fin', 'sdlc', 'rust', 'design', 'react']) assert.equal(bucket[k], 'auto', k);
+  assert.equal(values.ca, 'No');
+  assert.equal(values.us, 'Yes');
+  assert.equal(autofill(form, { ...p, years_experience: '' }).values.java, undefined);
+  // Your own answer to the same question last time stands.
+  const bank = new Map([[bankKey(form.questions[3].label, 'Stripe', 'select'), 'No']]);
+  assert.equal(autofill(form, p, bank, 'Stripe').values.spark, 'No');
+});
+
+test('Alpaca form: full mailing address on one line, full legal name, location and time zone', () => {
+  const text = (name, label) => ({ name, label, type: 'text', required: true });
+  const form = { questions: [
+    text('addr', 'Please provide full mailing address (permanent & shipping)'),
+    text('name', 'Please provide your full legal birth name (as seen on government-issued ID)'),
+    text('tz', 'Which location and timezone will you be working from?'),
+    text('line1', 'Home Address Line 1'),
+    text('email', 'Full email address'),
+    text('ref', 'Full name of your referrer'),
+    text('other', 'Have you used a different legal name?'),
+  ] };
+  const p = { ...profile, address: '100 Main St', city: 'Auburn', state: 'WA', zip: '98092', country: 'United States' };
+  const { values, bucket } = autofill(form, p);
+  assert.equal(values.addr, '100 Main St, Auburn, WA 98092, United States');
+  assert.equal(values.name, 'Sam Rivera');
+  assert.equal(bucket.addr, 'auto');
+  assert.equal(bucket.name, 'auto');
+  assert.equal(values.tz, 'Auburn, WA (Pacific Time)');
+  assert.equal(values.line1, '100 Main St');
+  assert.equal(values.email, 'sam@example.com');
+  assert.equal(values.ref, undefined);
+  assert.equal(values.other, undefined);
+});
+
+test("today's date: Pacific time, in the label's format", () => {
+  const late = new Date('2026-10-27T05:30:00Z'); // still Oct 26 in Seattle
+  assert.equal(todayFor("Today's Date (MM/DD/YY)", late), '10/26/26');
+  assert.equal(todayFor('Application date (YYYY-MM-DD)', late), '2026-10-26');
+  assert.equal(todayFor('Date of signature', late), '10/26/2026');
+});
+
+test('cover letters: a saved one written for another company is not reused; the job gets its own', () => {
+  const cl = { name: 'cover_letter_text', label: 'Cover Letter', type: 'textarea', kind: 'cover_letter', required: true };
+  const bank = new Map([[bankKey('Cover Letter', 'Tailscale', 'textarea'), 'Dear {company}, I love private networks.']]);
+  const { values, bucket, tailor } = autofill({ questions: [cl] }, { ...profile, essay_fit: 'I build features end to end.' }, bank, 'SoFi');
+  assert.equal(values.cover_letter_text, 'I build features end to end.');
+  assert.equal(bucket.cover_letter_text, 'suggested');
+  assert.deepEqual(tailor, ['cover_letter_text']);
 });
 
 test('pickOption and pickYears', () => {

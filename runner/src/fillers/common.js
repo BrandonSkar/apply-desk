@@ -153,6 +153,68 @@ export async function uncheckSmsOptIns(page) {
   });
 }
 
+// The boxes a stuck form is waiting on you to tick: unticked checkboxes in the form itself whose own words are an
+// agreement ("I have read and acknowledged...", "By checking this box, I consent..."), or the one box under such a
+// question. Not answer choices (a list of licenses, Yes/No), even under a required question. A CAPTCHA's "I'm not a
+// robot" sits in its own frame and is never among them, and a text-message opt-in only counts when it's the one
+// required box. Each is tagged on the page so tickBoxes can find it again: [{ key, label, question }].
+export async function boxesForYou(page) {
+  return page.evaluate(() => {
+    const consent = /agree|consent|acknowledg|certif|attest|confirm|accept|understand|authori[sz]|i have read|checking this box|terms|privacy/i;
+    const sms = /\bsms\b|text messag|receive.{0,30}\btexts?\b|opt.?in.{0,30}(text|sms)|(text|sms).{0,30}opt.?in/i;
+    const robot = /captcha|not a robot|i('| a)?m (a )?human/i;
+    const shown = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim();
+    for (const el of document.querySelectorAll('[data-apply-desk-box]')) el.removeAttribute('data-apply-desk-box');
+    const out = [];
+    for (const box of document.querySelectorAll('input[type=checkbox], [role=checkbox]')) {
+      const ticked = box.matches('input') ? box.checked : box.getAttribute('aria-checked') === 'true';
+      const labels = [...(box.labels || [])];
+      if (ticked || box.disabled || !(shown(box) || labels.some(shown) || shown(box.parentElement))) continue;
+      let label = labels.map(text).join(' ') || box.getAttribute('aria-label') || '';
+      for (const id of (box.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) label ||= text(document.getElementById(id));
+      // No label of its own: the nearest small container's text, never a whole section.
+      for (let el = box.parentElement, i = 0; !label && el && i < 4; el = el.parentElement, i++) {
+        if (text(el) && text(el).length < 400) label = text(el);
+      }
+      const holder = box.closest('fieldset, .application-question, [data-field-path], [class*="question" i]');
+      const title = holder?.querySelector('legend, .application-label, label:not(:has(input))');
+      let question = title && !title.contains(box) ? text(title) : '';
+      // Ashby leaves the title empty and writes the question in a paragraph beside the box.
+      if (!question && holder && text(holder).length < 600) question = text(holder).replace(label, '').trim();
+      const required = box.required || box.getAttribute('aria-required') === 'true'
+        || !!box.closest('[aria-required="true"], fieldset[required]') || /[*✱]\s*$/.test(question);
+      const alone = !holder || holder.querySelectorAll('input[type=checkbox], [role=checkbox]').length === 1;
+      const both = `${label} ${question}`;
+      // Ashby draws Yes/No questions as buttons over a hidden checkbox; the filler answers those.
+      if (robot.test(both) || /^(yes|no)( (yes|no))?$/i.test(label)) continue;
+      if (sms.test(both) ? !(required && alone) : !(consent.test(label) || (consent.test(question) && alone))) continue;
+      const key = String(out.length);
+      box.setAttribute('data-apply-desk-box', key);
+      out.push({ key, label: label.slice(0, 400), question: question === label ? '' : question.slice(0, 400) });
+    }
+    return out;
+  });
+}
+
+// Tick the boxes you ticked on the page (keys from boxesForYou) with real clicks, which every form records.
+export async function tickBoxes(page, keys) {
+  for (const key of keys) {
+    const box = page.locator(`[data-apply-desk-box="${key}"]`);
+    if (!(await box.count())) throw new Error('the form changed since it was read');
+    if (await box.isChecked().catch(() => false)) continue;
+    await box.scrollIntoViewIfNeeded().catch(() => {});
+    // A styled box hides the real input: click its label (or the container drawn in its place) instead.
+    await box.check({ timeout: 4000 }).catch(async () => {
+      const id = await box.getAttribute('id');
+      const label = id ? page.locator(`label[for="${id.replace(/["\\]/g, '\\$&')}"]`) : box.locator('xpath=ancestor::label[1]');
+      await ((await label.count()) ? label.first() : box.locator('xpath=..')).click();
+    });
+    await pace();
+    if (!(await box.isChecked().catch(() => false))) throw new Error('a box wouldn’t stay ticked');
+  }
+}
+
 // "A verification code was sent to you@... enter the 8-character code to confirm you're a human."
 // The code is for you to read and enter (on the page or in the window); the helper never reads your email.
 const CODE_PROMPT = /verification code (was|has been) sent|enter the \d+-character code|security code (was|has been) sent|enter (the )?(security|verification) code/i;

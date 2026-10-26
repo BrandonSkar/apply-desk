@@ -512,8 +512,32 @@ function codeBox(job) {
   return h('div', { class: 'codebox' }, input, h('button', { class: 'btn btn-small btn-primary', onclick: send }, 'Send code'));
 }
 
+// Boxes the form won't go without (consent, acknowledgements), shown here so they can be ticked from a phone too.
+// The helper ticks the same boxes in the form and presses Submit.
+function boxesBox(job) {
+  const ticks = job.boxes.map((b) => h('input', { type: 'checkbox', value: b.key }));
+  const send = async (btn) => {
+    btn.disabled = true;
+    try {
+      await post(`/jobs/${encodeURIComponent(job.id)}/boxes`, { keys: ticks.filter((t) => t.checked).map((t) => t.value) });
+      toast('Sent. The helper will tick them and submit.');
+      loadState();
+      renderSent();
+    } catch (err) {
+      toast(err.message, 'bad');
+      btn.disabled = false;
+    }
+  };
+  return h('div', { class: 'boxes' },
+    h('div', { class: 'muted small' }, 'Tick the ones you agree to. The helper ticks them in the form and submits it.'),
+    job.boxes.map((b, i) => h('label', { class: 'tick' }, ticks[i],
+      h('span', {}, b.question && h('span', { class: 'muted small q' }, b.question), b.label))),
+    h('button', { class: 'btn btn-small btn-primary', onclick: (e) => send(e.currentTarget) }, 'Tick and submit'));
+}
+
 function sentRow(job) {
-  const [label, tone] = job.needs === 'code' ? ['Needs your code', 'warn'] : STATUS[job.status] || [job.status, ''];
+  const [label, tone] = job.needs === 'code' ? ['Needs your code', 'warn']
+    : job.needs === 'boxes' ? ['Needs a box ticked', 'warn'] : STATUS[job.status] || [job.status, ''];
   const when = job.submitted_at || job.sent_at || job.updated_at;
   const acts = [];
   const act = (text, status, primary) =>
@@ -536,7 +560,8 @@ function sentRow(job) {
       h('a', { class: 'title', href: job.url, target: '_blank', rel: 'noopener noreferrer' }, job.title),
       h('div', { class: 'sub' }, [job.company, job.location, when && ago(when)].filter(Boolean).join(' · ')),
       job.note && h('div', { class: 'rnote' }, job.note),
-      job.needs === 'code' && codeBox(job)),
+      job.needs === 'code' && codeBox(job),
+      job.needs === 'boxes' && job.boxes?.length > 0 && boxesBox(job)),
     h('div', { class: 'acts' }, h('span', { class: `chip ${tone}` }, label), acts));
 }
 

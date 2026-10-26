@@ -13,14 +13,14 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { loadConfig, makeApi, ROOT } from './config.js';
 import { dailyDue, makeSweeper } from './sweep.js';
-import { companyLimit, enterCode, limitTexts, needsCode, settle, sleep, uncheckSmsOptIns } from './fillers/common.js';
+import { boxesForYou, companyLimit, enterCode, limitTexts, needsCode, settle, sleep, tickBoxes, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
 import * as ashby from './fillers/ashby.js';
 import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -97,8 +97,8 @@ context.on('close', () => {
   }
 });
 
-const report = (id, status, note, needs = null) =>
-  api('/runner/result', { method: 'POST', body: { id, status, note, needs, ...info } }).catch((err) => log('Could not report back:', err.message));
+const report = (id, status, note, needs = null, extra = {}) =>
+  api('/runner/result', { method: 'POST', body: { id, status, note, needs, ...extra, ...info } }).catch((err) => log('Could not report back:', err.message));
 
 // An application needs you: a beep here, and for an emailed code (which expires) its tab comes to the front.
 // The site also pushes it to your phone.
@@ -193,12 +193,45 @@ async function holdCompany(page, job, message) {
 
 // ---------- applications waiting on you ----------
 
-const waiting = new Map(); // job id -> { page, job, filler, until, needs, enteredAt }
+const waiting = new Map(); // job id -> { page, job, filler, ctx, until, needs, enteredAt }
 
-async function wait(page, job, filler, needs = null) {
+// ctx: { form, answers }, for pressing Submit again once you've ticked the boxes.
+async function wait(page, job, filler, ctx, needs = null) {
   // Limit wording already on the page (e.g. in the job description) isn't a rejection; only new wording is.
   const limitBefore = await limitTexts(page);
-  waiting.set(job.id, { page, job, filler, needs, limitBefore, until: Date.now() + WAIT_FOR_YOU_MS, enteredAt: 0 });
+  waiting.set(job.id, { page, job, filler, ctx, needs, limitBefore, until: Date.now() + WAIT_FOR_YOU_MS, enteredAt: 0 });
+}
+
+// The form is stuck on something for you. Boxes it won't go without show on the page (Sent tab), so they can be
+// ticked from your phone; the helper then ticks them here and presses Submit again.
+async function stuck(page, job, filler, ctx, note, urgent = false) {
+  const boxes = await boxesForYou(page).catch(() => []);
+  log(`  ${note}`);
+  if (boxes.length) log(`  Boxes to tick on the page: ${boxes.map((b) => `“${b.label.slice(0, 70)}”`).join(', ')}`);
+  await report(job.id, 'needs_you', note, boxes.length ? 'boxes' : null, { boxes });
+  callYou(page, urgent);
+  return wait(page, job, filler, ctx, boxes.length ? 'boxes' : null);
+}
+
+// What pressing Submit led to.
+async function afterSubmit(page, job, filler, ctx, outcome) {
+  if (outcome === 'submitted') return finish(page, job, true);
+  if (outcome === 'code') {
+    log('  The site emailed a verification code. Enter it on the page or in the helper window.');
+    await report(job.id, 'needs_you', CODE_NOTE, 'code');
+    callYou(page, true);
+    return wait(page, job, filler, ctx, 'code');
+  }
+  if (outcome.limit) return holdCompany(page, job, outcome.limit);
+  // Record what the page shows, so an unexpected message can be diagnosed from the Sent tab.
+  await screenshot(page, job, 'after-submit');
+  const shown = outcome === 'unknown' ? await pageMessage(page) : '';
+  const note = outcome === 'captcha'
+    ? 'The site wants a CAPTCHA. Solve it in the helper window; it will notice when the application goes through.'
+    : outcome.errors
+      ? `The form said: ${outcome.errors.join('; ')}. Fix it in the helper window and submit there.`
+      : `Pressed Submit but no confirmation showed up. Check the helper window.${shown ? ` The page says: “${shown}”` : ''}`;
+  return stuck(page, job, filler, ctx, note, outcome === 'captcha');
 }
 
 async function checkWaiting() {
@@ -218,6 +251,22 @@ async function checkWaiting() {
       waiting.delete(id);
       await holdCompany(page, job, limited);
       continue;
+    }
+    if (w.needs === 'boxes') {
+      // Only the boxes you ticked on the page; then Submit again.
+      const { code } = await api(`/runner/code?id=${encodeURIComponent(id)}`).catch(() => ({}));
+      if (code) {
+        waiting.delete(id);
+        try {
+          await tickBoxes(page, JSON.parse(code));
+          log(`${job.company}: ticked the boxes you ticked. Submitting.`);
+          await afterSubmit(page, job, filler, w.ctx, await filler.submit(page, w.ctx));
+        } catch (err) {
+          await report(id, 'needs_you', `Couldn’t tick the boxes (${err.message}). Tick them in the helper window and submit there.`);
+          await wait(page, job, filler, w.ctx);
+        }
+        continue;
+      }
     }
     // A code prompt can also show up after you fix something by hand.
     if (w.needs !== 'code' && (await needsCode(page).catch(() => false))) {
@@ -271,34 +320,10 @@ async function handle({ job, form, answers, prefs = {} }) {
       const n = await uncheckSmsOptIns(page).catch(() => 0);
       if (n) log(`  Unchecked ${n} text-message opt-in${n === 1 ? '' : 's'}.`);
     }
-    if (missing.length) {
-      log('  Needs you:', missing.join('; '));
-      await report(job.id, 'needs_you', `Couldn’t fill: ${missing.join('; ')}. Finish it in the helper window and submit there.`);
-      callYou(page);
-      return wait(page, job, filler);
-    }
+    const ctx = { form, answers };
+    if (missing.length) return stuck(page, job, filler, ctx, `Couldn’t fill: ${missing.join('; ')}. Finish it in the helper window and submit there.`);
     await screenshot(page, job, 'filled');
-    const outcome = await filler.submit(page, { form, answers });
-    if (outcome === 'submitted') return finish(page, job, true);
-    if (outcome === 'code') {
-      log('  The site emailed a verification code. Enter it on the page or in the helper window.');
-      await report(job.id, 'needs_you', CODE_NOTE, 'code');
-      callYou(page, true);
-      return wait(page, job, filler, 'code');
-    }
-    if (outcome.limit) return holdCompany(page, job, outcome.limit);
-    // Record what the page shows, so an unexpected message can be diagnosed from the Sent tab.
-    await screenshot(page, job, 'after-submit');
-    const shown = outcome === 'unknown' ? await pageMessage(page) : '';
-    const note = outcome === 'captcha'
-      ? 'The site wants a CAPTCHA. Solve it in the helper window; it will notice when the application goes through.'
-      : outcome.errors
-        ? `The form said: ${outcome.errors.join('; ')}. Fix it in the helper window and submit there.`
-        : `Pressed Submit but no confirmation showed up. Check the helper window.${shown ? ` The page says: “${shown}”` : ''}`;
-    log(`  ${note}`);
-    await report(job.id, 'needs_you', note);
-    callYou(page, outcome === 'captcha');
-    return wait(page, job, filler);
+    return afterSubmit(page, job, filler, ctx, await filler.submit(page, ctx));
   } catch (err) {
     if (err instanceof amazon.LimitError) {
       // At Amazon's cap: put the job back (your answers are kept) and pause Amazon until a spot opens.

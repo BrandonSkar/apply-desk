@@ -86,6 +86,19 @@ const hispanic = (race) => {
 };
 const fullName = (p) => [p.first_name, p.last_name].filter(Boolean).join(' ');
 const inWA = (p) => /^(wa|washington)$/i.test((p.state || '').trim());
+// With a WA address, a job in the Seattle area is a commute, not a move.
+const NEAR_SEATTLE = /seattle|bellevue|redmond|kirkland|bothell|renton|tukwila|\bkent\b|auburn|federal way|tacoma|issaquah|everett|lynnwood|puget sound/i;
+const nearJob = (p, job) => inWA(p) && NEAR_SEATTLE.test(job.location || '');
+// "City", "Home Address City", "Mailing Address State", "Current Country".
+const homeField = (field) => new RegExp(`^((home|mailing|current|residential|permanent) )?(address )?(${field})$`, 'i');
+
+// Today on the Pacific clock, in the format the label asks for (MM/DD/YY, YYYY-MM-DD), else MM/DD/YYYY.
+export function todayFor(label, date = new Date()) {
+  const [m, d, y] = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(date).split('/');
+  if (/yyyy-mm-dd/i.test(label)) return `${y}-${m}-${d}`;
+  return /mm\/dd\/yy(?!yy)/i.test(label) ? `${m}/${d}/${y.slice(2)}` : `${m}/${d}/${y}`;
+}
 
 const BY_NAME = {
   first_name: (p) => p.first_name,
@@ -105,7 +118,27 @@ const BY_NAME = {
   _systemfield_location: (p) => [p.city, p.state].filter(Boolean).join(', '),
 };
 
-// [label test, answer(profile, question), selectOnly?]
+// Work experience, not "How many years have you been active on the platform?" (a user of the product) or "a person
+// of transgender experience".
+const EXPERIENCE =/^(?!.*(active on|on the platform|been using|using (our|the)|member of|customer|subscriber|stream(ing|er)|watch|trans(gender)? experience|lived experience)).*(\bexperience\b|how many year'?s|how long have you\b[^?]{0,40}\b(used|using|worked|working|written|writing|programm|develop|buil|cod))/i;
+
+// Experience with anything counts as your total years: a range picks the one with your years, "Do you possess 4
+// years of experience with X?" is yes up to your years and no past them, "Do you have experience with X?" is yes.
+// Experience at this company ("Have you had prior work experience at Stripe?") is a different question. Asked after
+// your past answers, so one you gave to the same question before still stands.
+function experience(p, q, job) {
+  const have = parseFloat(p.years_experience);
+  if (!Number.isFinite(have) || q.type === 'textarea' || q.section === 'demographic') return null;
+  if (job.company && new RegExp(`\\b${escapeRe(job.company)}\\b`, 'i').test(q.label)) return null;
+  if (q.options?.length && pickYears(q.options, have)) return { years: p.years_experience };
+  const asks = /^(do|have|are|can|is)\b/i.test(q.label);
+  if (q.type === 'text' && !asks) return /year|how long/i.test(q.label) ? { years: p.years_experience } : null;
+  const n = /\b(\d+)(\s*(-|–|to)\s*\d+)?\+?\s*years?\b/i.exec(q.label);
+  const enough = !n || (/(less|fewer) than|under|at most|no more than/i.test(q.label) ? have < +n[1] : have >= +n[1]);
+  return enough ? [YES, 'Yes'] : [NO, 'No'];
+}
+
+// [label test, answer(profile, question, job), selectOnly?]
 const AUTO_RULES = [
   [/linkedin/i, (p) => p.linkedin],
   [/github/i, (p) => p.github],
@@ -118,6 +151,10 @@ const AUTO_RULES = [
   [/^(legal )?first name/i, (p) => p.first_name],
   [/^(legal )?last name|surname/i, (p) => p.last_name],
   [/^(legal )?full name$|^name$/i, (p) => fullName(p)],
+  // "Please provide your full legal birth name (as seen on government-issued ID)". Not someone else's name, a part
+  // of yours, or "Have you used a different legal name?".
+  [/^(?!(have|has|do|did|are|is|was|were)\b)(?!.*(first|last|middle|preferred|nick|maiden|refer|manager|supervisor|company|employer|school|emergency|contact|spouse|parent|recruiter))(.*\b(full|legal|birth)( (legal|birth))? name\b|.*\bname as (it )?(appears|seen|shown|written) on)/i,
+    (p) => fullName(p)],
   [/^e-?mail/i, (p) => p.email],
   [/^(phone|mobile|cell)/i, (p) => p.phone],
   [/(government|public|foreign) official|official of (any|a) government|member of the military|politically exposed|(government|public sector) (employee|employment|position|role)/i, government],
@@ -125,15 +162,23 @@ const AUTO_RULES = [
   [/(relative|family|related to|spouse|partner|household).{0,80}(government|official)/i, government],
   // "Have you held H-1B status, or had an H-1B petition approved...?": not for a US citizen.
   [/h-?1b/i, (p) => (/^(united states|usa?\b|u\.s\.)/i.test(p.citizenship || '') ? [NO, 'No'] : null)],
+  // "Do you hold, or intend to hold, any FINRA licenses?", "What FINRA license(s) do you hold?": none.
+  [/finra|securities licen/i, () => [NO, /^n\/?a\b|^none/i, 'None']],
+  // "Today's Date of Application (MM/DD/YY Format)"
+  [/today.?s date|(current|application|signature) date|date of (application|signature|submission)|date (signed|submitted)/i,
+    (p, q) => todayFor(q.label)],
   // "Would you like to be considered for future opportunities?", "keep my resume on file": yes, more chances.
   [/considered for (other|future)|future (opportunit|opening|role|position|job)|keep (your|my) (resume|information|application|profile|details) on file|talent (pool|community|network)/i,
     () => [YES, /^yes/i, /\b(please|keep me|consider me)\b/i, 'Yes']],
   [/non-?compet|non-?solicit|restrictive covenant|agreement.{0,80}(preclude|restrict|prevent|limit).{0,40}(employment|working|work)/i,
     (p) => yesNo(p.non_compete)],
+  // "Are you legally entitled to work in Canada?": not on US citizenship alone.
+  [/(authori[sz]ed|eligible|entitled|legally able|permitted|right) to (lawfully |legally )?work in (canada|mexico|the uk|the united kingdom|ireland|germany|france|the netherlands|spain|poland|india|australia|brazil|israel|japan|singapore|europe|the eu)\b/i,
+    (p) => (/^(united states|usa?\b|u\.s\.)/i.test(p.citizenship || '') ? [NO, 'No'] : null)],
   // Sponsorship before work authorization: "Do you require sponsorship ... for your right to work in your current
   // location?" is a sponsorship question. "Authorized to work without sponsorship" is an authorization one.
   [/^(?!.*without[^?]{0,40}sponsor).*sponsor/i, (p) => yesNo(p.needs_sponsorship)],
-  [/(authori[sz]ed|eligible|legally able|permitted|right) to work/i, (p) => yesNo(p.work_authorized)],
+  [/(authori[sz]ed|eligible|legally able|permitted|right) to (lawfully |legally )?work/i, (p) => yesNo(p.work_authorized)],
   // "Do you have unrestricted work authorization in the US?" (but not "...require sponsorship to obtain work authorization")
   [/^(?!.*sponsor).*(work authori[sz]ation|authori[sz]ation to work|employment authori[sz]ation|authori[sz]ed for employment)/i,
     (p) => yesNo(p.work_authorized)],
@@ -143,16 +188,25 @@ const AUTO_RULES = [
   [/\b(18|eighteen) (years|or older)|at least 18/i, () => [YES, 'Yes']],
   [/(countr(y|ies)).{0,60}(anticipate|plan|intend|expect|will be).{0,20}work/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
   [/(country|countries).{0,40}(resid(e|ing|ence)|liv(e|ing)|located|based)|(resid(e|ing)|liv(e|ing)|located|based).{0,30}country|current country|country of residence/i, (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  [homeField('country'), (p) => [p.country, 'United States', 'United States of America', 'USA', 'US']],
+  // "Are you located within, or planning to relocate to be within, a reasonable commute of this job's locations?"
+  // A job farther away gets your relocation answer, under "Check these".
+  [/^(are|can|could|do|will|would)\b[^?]*commut/i, (p, q, job) => (nearJob(p, job) ? [YES, 'Yes'] : null)],
   [/^(current )?location$|^location \(city/i, (p) => [p.city && p.state ? `${p.city}, ${p.state}` : '']],
   [/(current|most recent|previous|present).{0,25}(employer|company)|^company name/i, (p) => p.current_company],
   [/(current|most recent|previous|present).{0,25}(job )?title|current (role|position)/i, (p) => p.current_title],
   [/city,? (and )?state|(current|permanent|home) (work )?location|where are you (currently )?(located|based)|where do you (currently )?live/i,
     (p) => [p.city && p.state ? `${p.city}, ${p.state}` : '', ...stateNames(p.state)]],
-  [/^(current )?city$/i, (p) => p.city],
-  [/^state(\/province)?$/i, (p) => (/^[a-z]{2}$/i.test(p.state || '') ? [p.state, ...stateNames(p.state)] : stateNames(p.state))],
+  [homeField('city'), (p) => p.city],
+  [homeField('state(/province)?'), (p) => (/^[a-z]{2}$/i.test(p.state || '') ? [p.state, ...stateNames(p.state)] : stateNames(p.state))],
   [/(state|province).{0,40}(reside|live|located|based)|(reside|live|located|based).{0,40}(state|province)|state of residence/i, (p) => stateNames(p.state)],
+  // "Please provide full mailing address (permanent & shipping)": the whole address on one line, not a part of it.
+  [/^(?!.*(\bline\b|city|state|zip|postal|country|province|apt|suite|unit|e-?mail)).*\b(full|complete|entire)\b.{0,25}\baddress\b/i,
+    (p, q) => (q.type === 'text' || q.type === 'textarea') && p.address
+      ? [p.address, p.city, [p.state, p.zip].filter(Boolean).join(' '), p.country].filter(Boolean).join(', ') : null],
   [/zip|postal code/i, (p) => p.zip],
-  [/street address|^address( line ?1)?$/i, (p) => p.address],
+  [/street address/i, (p) => p.address],
+  [homeField('address( line ?1)?'), (p) => p.address],
   // These come before the gender rule: "Do you identify as transgender?" contains "gender".
   [/transgender|trans experience/i, (p) => transgender(p.transgender), true],
   [/lgbt|queer/i, (p) => lgbtq(p), true],
@@ -182,23 +236,22 @@ const SUGGESTED_RULES = [
       const level = /bachelor/i.test(q.label) ? /bachelor|master|ph\.?d|doctor/i : /master/i.test(q.label) ? /master|ph\.?d|doctor/i : /associate|bachelor|master|ph\.?d|doctor/i;
       return level.test(p.degree || '') ? [YES, 'Yes'] : null;
     }],
-  // Work experience, not "How many years have you been active on the platform?" (a user of the product).
-  [/^(?!.*(active on|on the platform|been using|using (our|the)|member of|customer|subscriber|stream(ing|er)|watch)).*(how many years|years of.{0,40}experience|experience.{0,20}years|total.{0,40}(professional|software|development|engineering).{0,200}experience)/i,
-    (p) => ({ years: p.years_experience })],
   [/salary|compensation|pay (expectation|requirement|range)|expected pay/i, (p) => p.desired_salary],
   [/how did you (first )?(hear|find|learn|discover|come across)|where did you (first )?(hear|find|see|learn)|referral source|^source$/i,
     (p) => [p.how_heard, /company (web)?site|career'?s? ?(web)?site|careers? page|job (site|posting)|website/i, /job board/i, /linkedin/i, /^other/i]],
   [/\breferr(ed|al)|know anyone|employee referral/i, () => [NO, /^none/i, /^n\/a/i, 'No']],
   // "Have you worked at X?", "previously employed by X": needs at/for/by/with, so "work authorization" and
   // "have you been working with Python" don't count.
-  [/(previously|ever|currently|formerly|have you).{0,40}\b(work(ed)?|employed)\b.{0,25}\b(at|for|by|with)\b|former employee|current employee|\b(are|were) you (currently |ever |previously )?(been )?(a|an) .{0,30}\bemployee\b/i,
+  [/(previously|ever|currently|formerly|have you).{0,40}\b(work(ed)?|employed)\b.{0,25}\b(at|for|by|with)\b|former employee|current employee|\b(are|were) you (currently |ever |previously )?(been )?(a|an) .{0,60}\bemployee\b/i,
     () => [NO, /\b(have not|haven.t|never|not previously|not been)\b/i, 'No']],
   [/accommodation/i, () => [NO, 'No']],
   [/(able|willing|comfortable).{0,30}(work|commute|come).{0,40}(office|on-?site|hybrid|in person|days)/i, () => [YES, 'Yes']],
-  [/time ?zone/i, () => [/pacific/i, /\bPST\b|\bPT\b/, 'Pacific Time']],
+  // "Which location and timezone will you be working from?" asks for both.
+  [/time ?zone/i, (p, q) => [/pacific/i, /\bPST\b|\bPT\b/,
+    /location|where|city/i.test(q.label) && p.city && p.state ? `${p.city}, ${p.state} (Pacific Time)` : 'Pacific Time']],
   [/start date|when can you start|available to start|notice period|earliest/i, (p) => p.notice_period],
   // Field of study: the profile's wording, or the closest field a fixed list offers.
-  [/field of study|\bmajor\b|discipline|area of study|what did you study/i,
+  [/field of study|\bmajor\b|discipline|area of study|what did you study|(what|which)\b.{0,25}\bdegree in\b/i,
     (p) => (p.discipline ? [p.discipline, /^computer science$/i, /computer science/i] : null)],
   [/degree|education level|highest level of education/i, (p) => [p.degree, /bachelor/i]],
   [/school|university|college/i, (p) => p.school],
@@ -214,12 +267,16 @@ const ESSAY_RULES = [
   [/\bwhy\b[^?]{0,25}\{company\}|\{company\}('s)? mission|excit\w*[^?]{0,60}(\{company\}|mission|company|role|team)|what (draws|attracts|interests|excites) you|why (do you want to|are you interested|this (role|company|team)|now\b|us\b|join)|why (do|would) you (like|want) to (work|join)|why are you (applying|interested)|what made you (decide to )?apply|why (did|do) you (decide to )?apply/i, 'essay_why'],
   [/most impactful|proud\w* of|proudest|(achievement|accomplishment)s? (you('re| are)|that you('re| are)) (most )?proud|(greatest|biggest|most significant|favorite) (achievement|accomplishment|project)|walk us through (a|an|one|your) (project|achievement|accomplishment)|(something|thing|project) you('ve| have)? (built|shipped|made)|tell us about a project/i, 'essay_built'],
   [/(hard|difficult|challenging|complex|toughest|tricky) (technical )?(problem|challenge|bug)|(hardest|toughest|most difficult|most challenging) (problem|bug|challenge|project)|a (time|problem) (when )?you (solved|overcame|faced)|challenge you('ve| have)? (faced|overcome|overcame|solved)|technical challenge/i, 'essay_problem'],
-  [/(good|great|strong) fit|why (should we hire|are you a fit)|what makes you (a |the )?(good|great|strong|ideal|right) (fit|candidate)|tell us about yourself|about yourself|what (would|will|can) you bring|introduce yourself|^cover letter$/i, 'essay_fit'],
+  [/(good|great|strong) fit|why (should we hire|are you a fit)|what makes you (a |the )?(good|great|strong|ideal|right) (fit|candidate)|tell us about yourself|about yourself|what (would|will|can) you bring|introduce yourself|\bcover letter\b/i, 'essay_fit'],
 ];
 
 // "...and how it relates to the role you are applying for": a saved answer fits, but Claude can tie it to the job
 // (when drafting is on, it rewrites these).
 const TAILOR = /relat\w* to (the|this) (role|position|job|team)|relevant (to|for) (the|this) (role|position|job|team)|appl(y|ies) to (the|this) (role|position|job)|you('re| are) applying for/i;
+
+// A cover letter is written for one company, so it's never saved for reuse: your "good fit" answer fills it, and a
+// letter drafted for the job replaces that.
+export const isCoverLetter = (q) => q.kind === 'cover_letter' || (q.type === 'textarea' && /\bcover letter\b/i.test(q.label));
 
 export function pickOption(options, wanted) {
   if (!options?.length) return null;
@@ -360,7 +417,8 @@ export function appliedBefore(label, company, applied) {
   return [...applied].some((a) => targets.has(companyKey(a)));
 }
 
-export function autofill(form, profile, bank = new Map(), company = '', { applied } = {}) {
+export function autofill(form, profile, bank = new Map(), company = '', { applied, location } = {}) {
+  const job = { company, location };
   const values = {};
   const bucket = {};
   const tailor = []; // saved written answers Claude may rewrite for this job
@@ -387,11 +445,12 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
 
     if (SMS.test(q.label)) {
       const yes = wantsSms(profile);
-      const v = fit(q, yes
-        ? [YES, /agree|consent|opt.?in|i (would|do)\b/i, 'Yes']
-        : [NO, /do not|don.?t|opt.?out|decline|no thanks/i, 'No']);
+      const agree = [YES, /agree|consent|acknowledge|opt.?in|i (would|do)\b/i, 'Yes'];
+      let v = fit(q, yes ? agree : [NO, /do not|don.?t|opt.?out|decline|no thanks/i, 'No']);
+      // Opted out, but the form won't send without "I agree" (its only choice): agree. Texts stop with STOP.
+      if (!v && q.required) v = fit(q, agree);
       if (v) set(v, 'auto');
-      // Opted out and the only choice is "I agree": leave it unchecked.
+      // Opted out and an optional box only says "I agree": leave it unchecked.
       else bucket[q.name] = q.required ? 'open' : 'auto';
       continue;
     }
@@ -405,7 +464,7 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
     for (const [re, answer, selectOnly] of AUTO_RULES) {
       if (!re.test(q.label)) continue;
       if (selectOnly && q.type !== 'select' && q.type !== 'multiselect') continue;
-      const v = fit(q, answer(profile, q));
+      const v = fit(q, answer(profile, q, job));
       if (v) { set(v, 'auto'); done = true; break; }
     }
     if (done) continue;
@@ -413,7 +472,7 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
     // You've answered this before: reuse it without asking again. Long written answers ("Why {company}?")
     // still show, since they usually need a tweak for the new job.
     const key = bankKey(q.label, company, q.type);
-    const banked = bank.has(key) ? bank.get(key) : bank.loose?.get(looseKey(key));
+    const banked = isCoverLetter(q) ? undefined : bank.has(key) ? bank.get(key) : bank.loose?.get(looseKey(key));
     if (banked !== undefined) {
       const v = fitBanked(q, fromBank(banked, company));
       const essay = q.type === 'textarea' || (q.type === 'text' && v.length > 80);
@@ -426,10 +485,15 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
       if (v) { set(v, 'auto'); continue; }
     }
 
+    if (EXPERIENCE.test(q.label)) {
+      const v = fit(q, experience(profile, q, job));
+      if (v) { set(v, 'auto'); continue; }
+    }
+
     for (const [re, answer, selectOnly] of SUGGESTED_RULES) {
       if (!re.test(q.label)) continue;
       if (selectOnly && q.type !== 'select' && q.type !== 'multiselect') continue;
-      const v = fit(q, answer(profile, q));
+      const v = fit(q, answer(profile, q, job));
       if (v) { set(v, 'suggested'); done = true; break; }
     }
     if (done) continue;
@@ -443,7 +507,7 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
       const answer = rule && profile[rule[1]];
       if (answer && answer.trim()) {
         set(fromBank(answer, who), 'suggested');
-        if (TAILOR.test(q.label)) tailor.push(q.name);
+        if (TAILOR.test(q.label) || isCoverLetter(q)) tailor.push(q.name);
         continue;
       }
     }

@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, EMPTY_PROFILE, PROFILE_FIELDS } from './defaults.js';
 import { buildTasks, runTask } from './sources.js';
 import { filterJobs, postedLimit, requiredYears } from './filters.js';
 import { loadForm, JobClosedError } from './forms.js';
-import { autoAnswers, autofill, bankKey, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
+import { autoAnswers, autofill, bankKey, isCoverLetter, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 import { draftable, draftAnswers } from './drafts.js';
 import { dailySummary, email, localDay, PAGE_URL } from './notify.js';
@@ -145,11 +145,12 @@ async function api(request, env, path, url, ctx) {
     return json({ ok: true, outbox: /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env) });
   }
 
-  const m = /^\/jobs\/([^/]+)\/(answers|status|code)$/.exec(path);
+  const m = /^\/jobs\/([^/]+)\/(answers|status|code|boxes)$/.exec(path);
   if (m && method === 'POST') {
     const id = decodeURIComponent(m[1]);
     if (m[2] === 'answers') return saveAnswers(env, id, body);
     if (m[2] === 'code') return giveCode(env, id, body);
+    if (m[2] === 'boxes') return giveBoxes(env, id, body);
     return setStatus(env, id, body);
   }
   return json({ error: 'Unknown endpoint.' }, 404);
@@ -245,7 +246,7 @@ async function nextQuick(env) {
   for (const job of results) {
     const form = await ensureForm(env, job, settings.maxYearsRequired || 99);
     if (!form || (await capReached(env, job, form, settings))) continue;
-    const fill = autofill(form, profile, bank, job.company, { applied });
+    const fill = autofill(form, profile, bank, job.company, { applied, location: job.location });
     if (!autoAnswers(form, fill)) continue;
     await setKV(env, 'showing', { id: job.id, at: now() });
     return { job: publicJob(job), form, fill };
@@ -266,7 +267,7 @@ async function next(env, lane) {
     const form = await ensureForm(env, job, maxYears);
     if (!form || (await capReached(env, job, form, settings))) continue;
     const profile = await getProfile(env);
-    const fill = autofill(form, profile, await getBank(env), job.company, { applied: await appliedCompanies(env) });
+    const fill = autofill(form, profile, await getBank(env), job.company, { applied: await appliedCompanies(env), location: job.location });
     await withDrafts(env, job, form, fill, profile);
     // Auto-send leaves the job on your screen to you.
     await setKV(env, 'showing', { id: job.id, at: now() });
@@ -348,7 +349,7 @@ async function draftAhead(env, currentId = '', { loadForms = true } = {}) {
     if (job.drafts || (!loadForms && !job.form)) return;
     const form = await ensureForm(env, job, maxYears);
     if (!form || (await capReached(env, job, form, settings))) return;
-    const questions = draftable(form, autofill(form, profile, bank, job.company, { applied }));
+    const questions = draftable(form, autofill(form, profile, bank, job.company, { applied, location: job.location }));
     if (questions.length) await makeDrafts(env, job, form, profile, questions, false);
   }));
 }
@@ -379,7 +380,7 @@ async function saveAnswers(env, id, body) {
   if (job.status !== 'new') return json({ error: 'This application was already sent. It’s on the Sent tab.' }, 409);
 
   const form = JSON.parse(job.form);
-  const fill = autofill(form, await getProfile(env), await getBank(env), job.company, { applied: await appliedCompanies(env) });
+  const fill = autofill(form, await getProfile(env), await getBank(env), job.company, { applied: await appliedCompanies(env), location: job.location });
   const given = body.answers && typeof body.answers === 'object' ? body.answers : {};
   const answers = { ...fill.values };
   for (const q of form.questions) {
@@ -399,7 +400,7 @@ async function saveAnswers(env, id, body) {
   // Remember answers to questions that will come up again at other companies.
   for (const q of form.questions) {
     const v = answers[q.name];
-    if (PROFILE_DRIVEN.has(q.name) || q.type === 'file' || q.section === 'demographic') continue;
+    if (PROFILE_DRIVEN.has(q.name) || q.type === 'file' || q.section === 'demographic' || isCoverLetter(q)) continue;
     if (fill.bucket[q.name] === 'auto' && v === fill.values[q.name]) continue;
     if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
     writes.push(
@@ -481,18 +482,28 @@ async function runnerResult(env, body) {
   if (!allowed.includes(body.status)) return json({ error: 'Unknown status.' }, 400);
   const t = now();
   const note = body.note ? String(body.note).slice(0, 1000) : null;
-  const needs = body.needs === 'code' ? 'code' : null;
+  const boxes = body.needs === 'boxes' ? cleanBoxes(body.boxes) : [];
+  const needs = body.needs === 'code' ? 'code' : boxes.length ? 'boxes' : null;
   // Only jobs the helper is working on: a late report never undoes what you did on the page
   // ("I finished it", Skip, Retry).
   await env.DB.prepare(
-    `UPDATE jobs SET status = ?, note = ?, needs = ?, code = NULL, updated_at = ?,
+    `UPDATE jobs SET status = ?, note = ?, needs = ?, ask = ?, code = NULL, updated_at = ?,
        submitted_at = CASE WHEN ? THEN ? ELSE submitted_at END,
        sent_at = CASE WHEN ? THEN NULL ELSE sent_at END
      WHERE id = ? AND status IN ('submitting', 'needs_you')`,
-  ).bind(body.status, note, needs, t, body.status === 'submitted' ? 1 : 0, t, body.status === 'new' ? 1 : 0, String(body.id)).run();
+  ).bind(body.status, note, needs, boxes.length ? JSON.stringify({ boxes }) : null, t,
+    body.status === 'submitted' ? 1 : 0, t, body.status === 'new' ? 1 : 0, String(body.id)).run();
   await setKV(env, 'runner', { seen: t, ...pickRunnerInfo(body) });
-  if (body.status === 'needs_you') await alertPhone(env, String(body.id), needs, note);
+  if (body.status === 'needs_you') await alertPhone(env, String(body.id), needs, note, boxes);
   return json({ ok: true });
+}
+
+// The boxes the helper found unticked: [{ key, label, question }], keys as it tagged them on the form.
+function cleanBoxes(list) {
+  if (!Array.isArray(list)) return [];
+  const text = (v) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  return list.filter((b) => /^\d{1,3}$/.test(String(b?.key))).slice(0, 20)
+    .map((b) => ({ key: String(b.key), label: text(b.label) || 'Unlabeled box', question: text(b.question) }));
 }
 
 // Phone pushes go out through the helper on your PC (ntfy turns away Cloudflare's shared addresses). They wait
@@ -517,14 +528,17 @@ async function takeOutbox(env) {
 }
 
 // An application waiting on you: a push to your phone, so an emailed code gets entered before it expires.
-async function alertPhone(env, id, needs, note) {
+async function alertPhone(env, id, needs, note, boxes = []) {
   const settings = await getSettings(env);
   if (!settings.notifyTopic || settings.pushNeedsYou === false) return;
   const job = await env.DB.prepare('SELECT company, title FROM jobs WHERE id = ?').bind(id).first();
   if (!job) return;
+  const ticks = boxes.map((b) => `☐ ${b.label.slice(0, 120)}`).join('\n');
   await queuePush(env, settings, needs === 'code'
     ? { title: `Code needed: ${job.company}`, message: `${job.company} emailed you a verification code for ${job.title}. Enter it on Apply Desk (Sent tab) within 30 minutes.`, priority: 5, tags: ['key'] }
-    : { title: `${job.company} needs you`, message: `${job.title}: ${String(note || 'It needs you to finish it.').slice(0, 300)}`, priority: 4, tags: ['warning'] },
+    : needs === 'boxes'
+      ? { title: `Tick to finish: ${job.company}`, message: `${job.title} is stuck on the form. Boxes to tick:\n${ticks}\nTick the ones you agree to on Apply Desk (Sent tab) and the helper submits it.`, priority: 4, tags: ['ballot_box_with_check'] }
+      : { title: `${job.company} needs you`, message: `${job.title}: ${String(note || 'It needs you to finish it.').slice(0, 300)}`, priority: 4, tags: ['warning'] },
   ).catch((err) => console.error('push', err));
 }
 
@@ -614,7 +628,7 @@ async function autoSendNext(env) {
   for (const job of batch) {
     const form = await ensureForm(env, job, settings.maxYearsRequired || 99);
     if (!form || (await capReached(env, job, form, settings))) continue;
-    const answers = autoAnswers(form, autofill(form, profile, bank, job.company, { applied }));
+    const answers = autoAnswers(form, autofill(form, profile, bank, job.company, { applied, location: job.location }));
     if (!answers) continue;
     const t = now();
     const r = await env.DB.prepare(
@@ -759,8 +773,19 @@ async function giveCode(env, id, body) {
   return r.meta.changes ? json({ ok: true }) : json({ error: 'That application isn’t waiting for a code.' }, 409);
 }
 
+// The boxes you ticked on the page (keys from the helper's list); the helper ticks them in the form and submits it.
+async function giveBoxes(env, id, body) {
+  const row = await env.DB.prepare(`SELECT ask FROM jobs WHERE id = ? AND needs = 'boxes'`).bind(id).first();
+  if (!row) return json({ error: 'That application isn’t waiting on boxes to tick.' }, 409);
+  const known = new Set((JSON.parse(row.ask || '{}').boxes || []).map((b) => b.key));
+  const keys = [...new Set((Array.isArray(body.keys) ? body.keys : []).map(String))].filter((k) => known.has(k));
+  if (!keys.length) return json({ error: 'Tick at least one box.' }, 400);
+  await env.DB.prepare(`UPDATE jobs SET code = ?, updated_at = ? WHERE id = ? AND needs = 'boxes'`).bind(JSON.stringify(keys), now(), id).run();
+  return json({ ok: true });
+}
+
 async function takeCode(env, id) {
-  const row = await env.DB.prepare(`SELECT code FROM jobs WHERE id = ? AND needs = 'code' AND code IS NOT NULL`).bind(id).first();
+  const row = await env.DB.prepare(`SELECT code FROM jobs WHERE id = ? AND needs IN ('code', 'boxes') AND code IS NOT NULL`).bind(id).first();
   if (!row) return { code: null };
   await env.DB.prepare('UPDATE jobs SET code = NULL WHERE id = ?').bind(id).run();
   return { code: row.code };
@@ -989,6 +1014,7 @@ function publicJob(j) {
   return {
     id: j.id, source: j.source, company: j.company, title: j.title, location: j.location, remote: !!j.remote,
     url: j.url, apply_url: j.apply_url, posted_at: j.posted_at, status: j.status, note: j.note, needs: j.needs,
+    boxes: j.needs === 'boxes' && j.ask ? JSON.parse(j.ask).boxes || [] : undefined,
     sent_at: j.sent_at, submitted_at: j.submitted_at, updated_at: j.updated_at,
   };
 }

@@ -112,7 +112,7 @@ export const LEVER = [
   'hsag', 'humble-robotics', 'ibility', 'ifm-us', 'immuta', 'ion', 'istaridigital.ai', 'jamcity', 'jupiterintel',
   'kepler', 'kgroupcompanies', 'kitware', 'kpler', 'lcbcchurch', 'leantaas', 'lendbuzz', 'level99', 'levelai', 'life',
   'lightship', 'lumotive', 'lyrahealth', 'magnetforensics', 'make-rain', 'matillion', 'meds', 'mendix', 'moo',
-  'mulliganfunding', 'mytos', 'neighbor', 'nextech', 'nextgenfed', 'nexuse-group', 'nomihealth', 'npowermedicine',
+  'mulliganfunding', 'mytos', 'neighbor', 'nextgenfed', 'nexuse-group', 'nomihealth', 'npowermedicine',
   'octoenergy', 'olo', 'openx', 'optionmetrics', 'outreach', 'palantir', 'parallelwireless', 'patchmypc', 'pattern',
   'pditechnologies', 'pelmorex', 'pentagrp', 'penumbrainc', 'perrknight', 'pigment', 'pingwind', 'pivotal',
   'pivotenergy', 'planettechnologies', 'plus-2', 'pointclickcare', 'prizeout', 'promiserobotics', 'prosper',
