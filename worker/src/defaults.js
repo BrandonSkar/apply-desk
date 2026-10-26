@@ -1,4 +1,5 @@
 // Starting values for the search settings and the profile. Both are editable on the page.
+import { ASHBY, GREENHOUSE, LEVER } from './companies.js';
 
 export const DEFAULT_SETTINGS = {
   dailyGoal: 10,
@@ -55,23 +56,10 @@ export const DEFAULT_SETTINGS = {
     'kent,? (wa|washington)', 'everett,? (wa|washington)', 'auburn,? (wa|washington)',
   ],
 
-  // Companies that hire software engineers in Washington or remotely (checked 2026-10-19 against ~400 names).
-  greenhouse: [
-    'abnormalsecurity', 'affirm', 'airbnb', 'andurilindustries', 'anthropic', 'asana', 'axon', 'bitwarden', 'block',
-    'braze', 'brex', 'calendly', 'chime', 'circleci', 'cloudflare', 'coinbase', 'consensys', 'coreweave', 'cribl',
-    'customerio', 'databricks', 'discord', 'doordashusa', 'dropbox', 'elastic', 'figma', 'fivetran', 'flexport',
-    'gitlab', 'grafanalabs', 'gusto', 'honeycomb', 'instacart', 'klaviyo', 'launchdarkly', 'lyft', 'mercury',
-    'mongodb', 'motional', 'mozilla', 'newrelic', 'nintendo', 'offerup', 'okta', 'pinterest', 'reddit', 'robinhood',
-    'roblox', 'samsara', 'scaleai', 'sigmacomputing', 'smartsheet', 'spacex', 'stripe', 'tailscale', 'talkspace',
-    'tanium', 'toast', 'truveta', 'twilio', 'twitch', 'upstart', 'vercel', 'zoominfo',
-  ],
-  lever: ['gopuff', 'palantir', 'rover', 'shieldai', 'zoox'],
-  // Ashby job boards (jobs.ashbyhq.com/<name>), many of them startups.
-  ashby: [
-    'alchemy', 'astronomer', 'baseten', 'benchling', 'cerebras', 'clickhouse', 'cohere', 'drata', 'elevenlabs',
-    'harvey', 'hex', 'lancedb', 'notion', 'openai', 'posthog', 'ramp', 'replit', 'resend', 'skydio', 'temporal',
-    'vanta', 'workos', 'writer',
-  ],
+  // Every company job board with jobs in the US or remote (see companies.js).
+  greenhouse: GREENHOUSE,
+  lever: LEVER,
+  ashby: ASHBY,
   amazon: {
     queries: ['software development engineer', 'front end engineer', 'software engineer'],
     locations: ['Seattle, WA', 'Bellevue, WA'],

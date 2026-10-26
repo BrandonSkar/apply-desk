@@ -11,7 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { loadConfig, makeApi } from './config.js';
+import { loadConfig, makeApi, ROOT } from './config.js';
+import { dailyDue, makeSweeper } from './sweep.js';
 import { companyLimit, enterCode, limitTexts, needsCode, settle, sleep, uncheckSmsOptIns } from './fillers/common.js';
 import * as amazon from './fillers/amazon.js';
 import * as ashby from './fillers/ashby.js';
@@ -19,7 +20,7 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
@@ -31,6 +32,10 @@ const CODE_NOTE = 'The site emailed you a verification code. Enter it on the pag
 // Settings → "Send automatically": while idle, ask the site for an application with nothing new to answer.
 const AUTOSEND_EVERY_MS = 60_000;
 const UPDATE_CHECK_MS = 60_000;
+// Every company's job board is checked once a day at this hour (this PC's time), and right away when the page asks.
+// A check that couldn't reach the site is tried again this often.
+const SWEEP_HOUR = 8;
+const SWEEP_RETRY_MS = 60 * 60_000;
 const RESTART_CODE = 75; // run.js starts the helper again
 const SUPERVISED = process.env.APPLY_DESK_SUPERVISED === '1';
 
@@ -117,13 +122,16 @@ async function deliver(outbox = []) {
 
 // ---------- updates ----------
 
-// The newest change time across the helper's own code: when it moves, there's an update to load.
+// The newest change time across the helper's own code (and the job-board code it shares with the site): when it
+// moves, there's an update to load.
 const SRC_DIR = fileURLToPath(new URL('.', import.meta.url));
+const SHARED = ['sources.js', 'filters.js'].map((f) => fileURLToPath(new URL(`../../worker/src/${f}`, import.meta.url)));
 function codeStamp() {
   let newest = 0;
   for (const f of readdirSync(SRC_DIR, { recursive: true })) {
     if (String(f).endsWith('.js')) newest = Math.max(newest, statSync(path.join(SRC_DIR, String(f))).mtimeMs);
   }
+  for (const f of SHARED) newest = Math.max(newest, statSync(f).mtimeMs);
   return newest;
 }
 const startedStamp = codeStamp();
@@ -140,7 +148,7 @@ async function restartIfUpdated() {
     updateNoted = true;
     return;
   }
-  if (waiting.size) return; // finish what's open first
+  if (waiting.size || sweeping) return; // finish what's open first
   log('Updated code found. Restarting to load it…');
   stopping = true;
   await context.close().catch(() => {});
@@ -335,6 +343,22 @@ async function prepareNext() {
   }
 }
 
+// ---------- checking every company for new jobs ----------
+
+const sweeper = makeSweeper({ api, file: path.join(ROOT, '.sweep-cache.json'), log });
+let lastTry = 0;
+let sweeping = null;
+
+// It's only downloads, so it runs alongside applications (and while paused from the page).
+function sweepSoon(now = false) {
+  if (sweeping) return;
+  if (!now && (!dailyDue(sweeper.lastAt(), SWEEP_HOUR) || Date.now() - lastTry < SWEEP_RETRY_MS)) return;
+  lastTry = Date.now();
+  sweeping = sweeper.sweep()
+    .catch((err) => log('Couldn’t check the job boards:', err.message))
+    .finally(() => (sweeping = null));
+}
+
 // ---------- main loop ----------
 
 // Settings → "Send automatically": the site picks an application with nothing new to answer and hands it over
@@ -363,6 +387,7 @@ while (!stopping) {
       log('Could not reach the site:', err.message);
     }
     await deliver(claim?.outbox);
+    if (claim) sweepSoon(claim.sweep);
     // Paused from the page: stay running, take no work.
     if (claim?.paused !== wasPaused) {
       wasPaused = !!claim?.paused;
@@ -385,6 +410,7 @@ while (!stopping) {
   } else if (waiting.size >= MAX_WAITING && Date.now() - lastClaim >= POLL_MS) {
     lastClaim = Date.now();
     await api('/runner/heartbeat', { method: 'POST', body: info }).then((r) => deliver(r.outbox)).catch(() => {});
+    sweepSoon();
   }
   await sleep(waiting.size ? 4000 : Math.max(1000, POLL_MS - (Date.now() - lastClaim)));
 }

@@ -6,12 +6,16 @@ import { requiredYears } from './filters.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ApplyDesk/1.0 (+https://brandonskar.com/jobs)';
 
-async function getJSON(url) {
-  const res = await fetch(url, { headers: { 'user-agent': UA, accept: 'application/json' } });
+// With the ETag from last time, an unchanged board answers 304 and sends nothing: { notModified: true }. fetch adds
+// "Cache-Control: no-cache" to a request with an ETag unless it already has one, and Lever then always resends.
+async function getJSON(url, etag) {
+  const conditional = etag ? { 'if-none-match': etag, 'cache-control': 'max-age=0' } : {};
+  const res = await fetch(url, { headers: { 'user-agent': UA, accept: 'application/json', ...conditional } });
+  if (res.status === 304) return { notModified: true };
   if (!res.ok) throw new Error(`${res.status} from ${new URL(url).host}`);
   const text = await res.text();
   try {
-    return JSON.parse(text);
+    return { data: JSON.parse(text), etag: res.headers.get('etag') };
   } catch {
     throw new Error(`not JSON from ${new URL(url).host}: ${text.slice(0, 60)}`);
   }
@@ -26,7 +30,8 @@ const NAMES = {
 };
 const companyName = (board) => NAMES[board] || titleCase(board);
 
-// One task = one HTTP request. A refresh works through the list a slice at a time.
+// One task = one HTTP request. The helper on your PC runs all of them once a day; the site's own refresh works
+// through the list a slice at a time when the helper hasn't.
 export function buildTasks(s) {
   const tasks = [];
   for (const board of s.greenhouse) tasks.push({ kind: 'greenhouse', board });
@@ -40,18 +45,27 @@ export function buildTasks(s) {
 }
 
 export async function runTask(t) {
-  switch (t.kind) {
-    case 'greenhouse': return greenhouse(t.board);
-    case 'lever': return lever(t.board);
-    case 'ashby': return ashby(t.board);
-    case 'amazon': return amazon(t.q, t.loc);
-    case 'microsoft': return microsoft(t.q, t.loc, t.start);
-    default: return [];
-  }
+  return (await fetchTask(t)).jobs;
 }
 
-async function greenhouse(board) {
-  const d = await getJSON(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs`);
+// { jobs, etag }, or { notModified: true } when `etag` is given and the board hasn't changed since.
+export async function fetchTask(t, etag) {
+  const source = SOURCES[t.kind];
+  if (!source) return { jobs: [] };
+  const r = await getJSON(source.url(t), etag);
+  return r.notModified ? r : { jobs: source.jobs(t, r.data), etag: r.etag };
+}
+
+// Each kind of task: the address it asks, and how the answer becomes jobs.
+const SOURCES = {
+  greenhouse: { url: (t) => `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(t.board)}/jobs`, jobs: (t, d) => greenhouse(t.board, d) },
+  lever: { url: (t) => `https://api.lever.co/v0/postings/${encodeURIComponent(t.board)}?mode=json`, jobs: (t, d) => lever(t.board, d) },
+  ashby: { url: (t) => `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(t.board)}?includeCompensation=false`, jobs: (t, d) => ashby(t.board, d) },
+  amazon: { url: (t) => amazonUrl(t.q, t.loc), jobs: (_t, d) => amazon(d) },
+  microsoft: { url: (t) => microsoftUrl(t.q, t.loc, t.start), jobs: (_t, d) => microsoft(d) },
+};
+
+function greenhouse(board, d) {
   return (d.jobs || []).map((j) => ({
     id: `gh:${board}:${j.id}`,
     source: 'greenhouse',
@@ -67,8 +81,7 @@ async function greenhouse(board) {
   }));
 }
 
-async function lever(board) {
-  const d = await getJSON(`https://api.lever.co/v0/postings/${encodeURIComponent(board)}?mode=json`);
+function lever(board, d) {
   return (Array.isArray(d) ? d : []).map((j) => ({
     id: `lever:${board}:${j.id}`,
     source: 'lever',
@@ -85,8 +98,7 @@ async function lever(board) {
   }));
 }
 
-async function ashby(board) {
-  const d = await getJSON(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(board)}?includeCompensation=false`);
+function ashby(board, d) {
   return (d.jobs || []).filter((j) => j.isListed !== false).map((j) => {
     // Ashby's isRemote is true even for hybrid jobs, so go by workplaceType (Remote / Hybrid / OnSite) and the
     // job's country instead; a "Remote" entry among its locations still counts.
@@ -108,10 +120,13 @@ async function ashby(board) {
   });
 }
 
-async function amazon(q, loc) {
+function amazonUrl(q, loc) {
   const u = new URL('https://www.amazon.jobs/en/search.json');
   u.search = new URLSearchParams({ base_query: q, loc_query: loc, country: 'USA', result_limit: '100', offset: '0', sort: 'recent' });
-  const d = await getJSON(u);
+  return String(u);
+}
+
+function amazon(d) {
   return (d.jobs || []).map((j) => {
     const posted = Date.parse(j.posted_date);
     return {
@@ -130,10 +145,13 @@ async function amazon(q, loc) {
   });
 }
 
-async function microsoft(q, loc, start) {
+function microsoftUrl(q, loc, start) {
   const u = new URL('https://apply.careers.microsoft.com/api/pcsx/search');
   u.search = new URLSearchParams({ domain: 'microsoft.com', query: q, location: loc, start: String(start), num: '10', sort_by: 'timestamp' });
-  const d = await getJSON(u);
+  return String(u);
+}
+
+function microsoft(d) {
   return (d.data?.positions || []).map((j) => ({
     id: `microsoft:${j.id}`,
     source: 'microsoft',

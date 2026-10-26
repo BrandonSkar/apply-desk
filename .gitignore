@@ -6,6 +6,7 @@ node_modules/
 runner/config.local.json
 runner/.browser-profile/
 runner/screenshots/
+runner/.sweep-cache.json
 
 *.log
 .DS_Store

@@ -402,13 +402,13 @@ function emptyQueue(note) {
   const r = lastState?.refresh;
   const status = h('p', { class: 'muted small' },
     r?.lastCycleAt ? `Last full check of every company ${ago(r.lastCycleAt)}.` : 'The first check of every company is still running.',
-    ' New jobs are pulled in automatically every few minutes.');
+    ' The helper on your PC checks every company each morning at 8.');
   const progress = h('div', { class: 'progress', hidden: true }, h('div'));
   const btn = h('button', { class: 'btn btn-primary', onclick: async () => {
     btn.disabled = true;
     progress.hidden = false;
     const added = await runRefresh((p) => (progress.firstChild.style.width = `${p * 100}%`));
-    toast(added ? `Found ${added} new job${added === 1 ? '' : 's'}` : 'No new matching jobs right now');
+    if (added !== null) toast(added ? `Found ${added} new job${added === 1 ? '' : 's'}` : 'No new matching jobs right now');
     loadState();
     renderQueue();
   } }, 'Check every company now');
@@ -432,6 +432,11 @@ async function runRefresh(onProgress = () => {}) {
   } catch (err) {
     toast(err.message, 'bad');
     return 0;
+  }
+  if (first.queued) {
+    onProgress(1);
+    toast('The helper on your PC is checking every company now. New jobs show up here in a minute or two.');
+    return null;
   }
   added += first.added;
   const runs = Math.ceil(first.total / 3);
@@ -683,9 +688,9 @@ async function renderSettings() {
     h('label', { class: 'check' }, remote, 'Include remote jobs anywhere in the US'),
     lines('areas', 'Seattle-area places', 'One per line. Jobs whose location mentions one of these count as local.', 5)),
   h('fieldset', {}, h('legend', {}, 'Companies'),
-    lines('greenhouse', 'Greenhouse companies', 'The company’s Greenhouse board name: the part after job-boards.greenhouse.io/ in its job links.', 8),
-    lines('lever', 'Lever companies', 'The part after jobs.lever.co/ in its job links.', 4),
-    lines('ashby', 'Ashby companies', 'The part after jobs.ashbyhq.com/ in its job links.', 6)),
+    lines('greenhouse', `Greenhouse companies (${s.greenhouse.length})`, 'The company’s Greenhouse board name: the part after job-boards.greenhouse.io/ in its job links.', 8),
+    lines('lever', `Lever companies (${s.lever.length})`, 'The part after jobs.lever.co/ in its job links.', 4),
+    lines('ashby', `Ashby companies (${s.ashby.length})`, 'The part after jobs.ashbyhq.com/ in its job links.', 6)),
   h('details', { class: 'qgroup' }, h('summary', {}, 'Job title rules (advanced)'),
     lines('titleInclude', 'Titles to include', 'Patterns (regular expressions). A title matches if any part matches one.', 8),
     lines('levelExclude', 'Too-senior words', null, 4),
@@ -698,16 +703,19 @@ async function renderSettings() {
     refreshBtn.disabled = true;
     progress.hidden = false;
     const added = await runRefresh((p) => (progress.firstChild.style.width = `${p * 100}%`));
-    toast(added ? `Found ${added} new job${added === 1 ? '' : 's'}` : 'No new matching jobs right now');
+    if (added !== null) toast(added ? `Found ${added} new job${added === 1 ? '' : 's'}` : 'No new matching jobs right now');
     refreshBtn.disabled = false;
     loadState();
   } }, 'Check every company now');
 
+  // The helper checks every company from your PC; without it, the site works through them a few at a time.
+  const byHelper = r?.helperAt && Date.now() - Date.parse(r.helperAt) < 25 * 60 * 60 * 1000;
   const refreshCard = h('div', { class: 'card' },
     h('h3', {}, 'Job refresh'),
-    h('p', { class: 'muted small' },
-      r?.lastCycleAt ? `Last full check ${ago(r.lastCycleAt)}. ` : '',
-      r ? `Working through source ${r.cursor || 0} of ${r.total}.` : 'Not started yet.'),
+    h('p', { class: 'muted small' }, byHelper
+      ? `The helper on your PC checks all ${r.helper.boards.toLocaleString()} company job boards each morning at 8. Last check ${ago(r.helperAt)}: ${r.helper.matching} open jobs match your search.`
+      : [r?.lastCycleAt ? `Last full check ${ago(r.lastCycleAt)}. ` : '',
+        r ? `The helper isn’t checking right now, so the site works through the ${r.total.toLocaleString()} job boards a few at a time (at ${r.cursor || 0}).` : 'Not started yet.']),
     r?.errors?.length ? h('details', {}, h('summary', {}, `Recent errors (${r.errors.length})`), h('pre', { class: 'code' }, r.errors.join('\n'))) : null,
     refreshBtn, progress);
 

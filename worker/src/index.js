@@ -39,6 +39,13 @@ const PREPARE_BUFFER = 5;
 const SENT_STATUSES = ['ready', 'submitting', 'submitted', 'needs_you', 'failed', 'applied_manual'];
 // Small batches keep each run well inside the free plan's CPU limit; the cron works through the rest.
 const TASKS_PER_RUN = 3;
+// The helper checks every company from your PC once a day (8 AM). While its last check is this recent, the
+// scheduled refresh leaves the job boards to it; after a missed day, the site starts working through them itself.
+const HELPER_SWEPT_MS = 25 * 60 * 60 * 1000;
+// The helper polls every 15 seconds; seen within this long, it's running.
+const HELPER_ONLINE_MS = 2 * 60 * 1000;
+// Settings → Companies: the most boards each list can hold.
+const BOARD_LIST_MAX = 3000;
 const BACKOFF_MS = 3 * 60 * 60 * 1000;
 const STALE_SUBMIT_MS = 20 * 60 * 1000;
 
@@ -114,12 +121,13 @@ async function api(request, env, path, url, ctx) {
   if (path === '/profile' && method === 'PUT') return saveProfile(env, body);
   if (path === '/settings' && method === 'GET') return json(await getSettings(env));
   if (path === '/settings' && method === 'PUT') return saveSettings(env, body);
-  if (path === '/refresh' && method === 'POST') return json(await refreshSlice(env));
+  if (path === '/refresh' && method === 'POST') return json(await refreshNow(env));
   if (path === '/runner/claim' && method === 'POST') return json(await claim(env, body));
   if (path === '/runner/result' && method === 'POST') return runnerResult(env, body);
   if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || ''));
   if (path === '/runner/prepare' && method === 'POST') return json(await claimPrepare(env));
   if (path === '/runner/form' && method === 'POST') return saveRunnerForm(env, body);
+  if (path === '/runner/jobs' && method === 'POST') return saveFoundJobs(env, body);
   if (path === '/runner/site' && method === 'POST') {
     await setPaused(env, String(body.source || ''), body.paused === true, body.note);
     return json({ ok: true, paused: await getKV(env, 'paused', {}) });
@@ -439,14 +447,17 @@ async function claim(env, body) {
 
   // Phone pushes waiting to go out; the helper sends them (from 0.7 on; older ones would drop them).
   const outbox = /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env);
-  if (await getKV(env, 'helperPaused', false)) return { job: null, paused: true, outbox };
+  // "Check every company now" on the page: the helper starts a check right away.
+  const sweep = await takeSweepRequest(env);
+  if (await getKV(env, 'helperPaused', false)) return { job: null, paused: true, outbox, sweep };
   const job = await env.DB.prepare(`SELECT * FROM jobs WHERE status = 'ready' ORDER BY updated_at ASC LIMIT 1`).first();
-  if (!job) return { job: null, outbox };
+  if (!job) return { job: null, outbox, sweep };
   const r = await env.DB.prepare(`UPDATE jobs SET status = 'submitting', updated_at = ? WHERE id = ? AND status = 'ready'`).bind(t, job.id).run();
-  if (!r.meta.changes) return { job: null, outbox };
+  if (!r.meta.changes) return { job: null, outbox, sweep };
   const profile = await getProfile(env);
   return {
     outbox,
+    sweep,
     job: { ...publicJob(job), apply_url: job.apply_url, board: job.board },
     form: JSON.parse(job.form),
     answers: JSON.parse(job.answers),
@@ -689,6 +700,8 @@ async function claimPrepare(env) {
   ).bind(...sources, fresh, stale).first();
   if (!job) return { job: null };
   await env.DB.prepare(`UPDATE jobs SET needs = 'preparing', updated_at = ? WHERE id = ?`).bind(now(), job.id).run();
+  // For a paused site this is the day's one try, however it turns out (signed out included).
+  if (paused[job.source]) await setKV(env, 'paused', { ...paused, [job.source]: { ...paused[job.source], checkedAt: now() } });
   return { job: { ...publicJob(job), apply_url: job.apply_url } };
 }
 
@@ -757,10 +770,28 @@ const pickRunnerInfo = (b) => ({ version: String(b.version || '').slice(0, 20), 
 
 // ---------- refresh ----------
 
-async function refreshSlice(env) {
+// "Check every company now": the helper does it in a minute or two when it's running; otherwise the page works
+// through the site's own refresh a slice at a time.
+async function refreshNow(env) {
+  const runner = await getKV(env, 'runner', null);
+  if (runner?.seen && Date.now() - Date.parse(runner.seen) < HELPER_ONLINE_MS) {
+    await setKV(env, 'sweepNow', true);
+    return { queued: true };
+  }
+  return refreshSlice(env, { force: true });
+}
+
+async function takeSweepRequest(env) {
+  if (!(await getKV(env, 'sweepNow', false))) return false;
+  await setKV(env, 'sweepNow', false);
+  return true;
+}
+
+async function refreshSlice(env, { force = false } = {}) {
+  const prev = await getKV(env, 'refresh', { cursor: 0 });
+  if (!force && prev.helperAt && Date.now() - Date.parse(prev.helperAt) < HELPER_SWEPT_MS) return { skipped: true };
   const settings = await getSettings(env);
   const tasks = buildTasks(settings);
-  const prev = await getKV(env, 'refresh', { cursor: 0 });
   const start = prev.cursor >= tasks.length ? 0 : prev.cursor || 0;
   const slice = tasks.slice(start, start + TASKS_PER_RUN);
   const cursor = start + slice.length;
@@ -790,6 +821,54 @@ async function refreshSlice(env) {
   const added = await insertJobs(env, kept);
   if (errors.length) await setKV(env, 'refresh', { ...info, errors: [...errors.map((e) => `${now().slice(5, 16)} ${e}`), ...(prev.errors || [])].slice(0, 8) });
   return { added, scanned: found.length, matched: kept.length, cursor, total: tasks.length, cycleDone, errors };
+}
+
+// The helper's check of every company: the jobs it found that match your search, a batch at a time, and with the
+// last batch a summary of the check. The site runs its own filters over them too.
+async function saveFoundJobs(env, body) {
+  const settings = await getSettings(env);
+  const jobs = (Array.isArray(body.jobs) ? body.jobs : []).slice(0, 200).map(cleanJob).filter(Boolean);
+  const added = await insertJobs(env, filterJobs(jobs, settings));
+  const s = body.sweep;
+  if (s && typeof s === 'object') {
+    const prev = await getKV(env, 'refresh', { cursor: 0 });
+    const t = now();
+    const errors = (Array.isArray(s.errors) ? s.errors : []).slice(0, 8).map((e) => `${t.slice(5, 16)} ${String(e).slice(0, 200)}`);
+    const count = (v) => (Number.isFinite(+v) ? Math.max(0, Math.round(+v)) : 0);
+    await setKV(env, 'refresh', {
+      ...prev,
+      helperAt: t,
+      lastCycleAt: t,
+      total: count(s.boards),
+      helper: { boards: count(s.boards), changed: count(s.changed), matching: count(s.matching), seconds: count(s.seconds) },
+      errors: [...errors, ...(prev.errors || [])].slice(0, 8),
+    });
+  }
+  return json({ ok: true, added });
+}
+
+const JOB_ID = /^(gh|lever|ashby|amazon|microsoft):[\w.: -]{1,200}$/;
+const httpsUrl = (u) => (/^https:\/\/\S+$/.test(String(u || '')) ? String(u).slice(0, 1000) : null);
+
+function cleanJob(j) {
+  if (!j || !JOB_ID.test(String(j.id)) || !AUTO_SOURCES.includes(j.source)) return null;
+  const url = httpsUrl(j.url);
+  const applyUrl = httpsUrl(j.apply_url);
+  if (!url || !applyUrl || !j.title) return null;
+  return {
+    id: String(j.id),
+    source: j.source,
+    board: j.board ? String(j.board).slice(0, 100) : null,
+    company: String(j.company || ''),
+    title: String(j.title),
+    location: String(j.location || ''),
+    remote: j.remote === true || j.remote === 1,
+    country: String(j.country || '').slice(0, 20),
+    url,
+    apply_url: applyUrl,
+    posted_at: validISO(j.posted_at),
+    min_years: Number.isInteger(j.min_years) ? j.min_years : null,
+  };
 }
 
 const JOB_COLS = ['id', 'source', 'board', 'company', 'title', 'location', 'remote', 'url', 'apply_url', 'posted_at', 'found_at', 'min_years'];
@@ -858,7 +937,7 @@ async function saveProfile(env, body) {
 async function saveSettings(env, body) {
   const s = { ...DEFAULT_SETTINGS };
   const num = (v, lo, hi, d) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, Math.round(+v))) : d);
-  const strings = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 200) : null);
+  const strings = (v, max = 200) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, max) : null);
   s.dailyGoal = num(body.dailyGoal, 1, 200, s.dailyGoal);
   s.maxAgeDays = num(body.maxAgeDays, 1, 120, s.maxAgeDays);
   s.maxYearsRequired = num(body.maxYearsRequired, 1, 30, s.maxYearsRequired);
@@ -879,9 +958,13 @@ async function saveSettings(env, body) {
   s.notifyTopic = /^[A-Za-z0-9_-]{12,64}$/.test(topic)
     ? topic
     : `applydesk-${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
-  for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas', 'greenhouse', 'lever', 'ashby']) {
+  for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas']) {
     const v = strings(body[k]);
     if (v) s[k] = v;
+  }
+  for (const k of ['greenhouse', 'lever', 'ashby']) {
+    const v = strings(body[k], BOARD_LIST_MAX);
+    if (v) s[k] = [...new Set(v)];
   }
   for (const k of ['titleInclude', 'levelExclude', 'hardExclude', 'areas']) {
     for (const re of s[k]) {
@@ -892,9 +975,10 @@ async function saveSettings(env, body) {
       }
     }
   }
-  for (const k of ['greenhouse', 'lever']) s[k] = s[k].map((b) => b.toLowerCase()).filter((b) => /^[a-z0-9-]+$/.test(b));
-  // Ashby board names can have capitals and dots (they're case-sensitive in the URL).
-  s.ashby = s.ashby.filter((b) => /^[A-Za-z0-9.-]+$/.test(b));
+  // Lever board names can have dots ("arcteryx.com"); Ashby's can have capitals, dots and spaces ("Flock Safety"),
+  // and they're case-sensitive in the URL.
+  for (const k of ['greenhouse', 'lever']) s[k] = s[k].map((b) => b.toLowerCase()).filter((b) => /^[a-z0-9.-]+$/.test(b));
+  s.ashby = s.ashby.filter((b) => /^[A-Za-z0-9.-]+( [A-Za-z0-9.-]+)*$/.test(b));
   await setKV(env, 'settings', s);
   return json({ ok: true, settings: s });
 }
