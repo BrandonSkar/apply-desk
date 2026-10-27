@@ -156,12 +156,12 @@ export async function uncheckSmsOptIns(page) {
 // The boxes a stuck form is waiting on you to tick: unticked checkboxes in the form itself whose own words are an
 // agreement ("I have read and acknowledged...", "By checking this box, I consent..."), or the one box under such a
 // question. Not answer choices (a list of licenses, Yes/No), even under a required question. A CAPTCHA's "I'm not a
-// robot" sits in its own frame and is never among them, and a text-message opt-in only counts when it's the one
-// required box. Each is tagged on the page so tickBoxes can find it again: [{ key, label, question }].
+// robot" sits in its own frame and is never among them, and a text-message or marketing opt-in only counts when
+// it's the one required box. Each is tagged on the page so tickBoxes can find it again: [{ key, label, question }].
 export async function boxesForYou(page) {
   return page.evaluate(() => {
     const consent = /agree|consent|acknowledg|certif|attest|confirm|accept|understand|authori[sz]|i have read|checking this box|terms|privacy/i;
-    const sms = /\bsms\b|text messag|receive.{0,30}\btexts?\b|opt.?in.{0,30}(text|sms)|(text|sms).{0,30}opt.?in/i;
+    const sms = /\bsms\b|text messag|receive.{0,30}\btexts?\b|opt.?in.{0,30}(text|sms)|(text|sms).{0,30}opt.?in|newsletter|marketing|promotional/i;
     const robot = /captcha|not a robot|i('| a)?m (a )?human/i;
     const shown = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
     const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim();

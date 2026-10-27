@@ -20,13 +20,18 @@ import * as greenhouse from './fillers/greenhouse.js';
 import * as lever from './fillers/lever.js';
 import * as microsoft from './fillers/microsoft.js';
 
-const VERSION = '0.10.0';
+const VERSION = '0.11.0';
 const FILLERS = { greenhouse, lever, ashby, amazon, microsoft };
 const signedOut = (err) => err instanceof amazon.SignedOutError || err instanceof microsoft.SignedOutError;
 // Reading an Amazon or Microsoft job's questions opens its application, so it's paced and only done while idle.
 const PREPARE_EVERY_MS = 90_000;
 const POLL_MS = 15_000;
 const WAIT_FOR_YOU_MS = 30 * 60_000;
+// An emailed security code usually reaches the site (forwarded by your Gmail filter) within seconds. The helper
+// checks this often, for this long, before asking you; then for the confirmation page this long after entering it.
+const CODE_POLL_MS = 3000;
+const CODE_WAIT_MS = 90_000;
+const CONFIRM_WAIT_MS = 45_000;
 const MAX_WAITING = 5;
 const CODE_NOTE = 'The site emailed you a verification code. Enter it on the page (Sent tab) or in the helper window.';
 // Settings → "Send automatically": while idle, ask the site for an application with nothing new to answer.
@@ -202,9 +207,73 @@ async function wait(page, job, filler, ctx, needs = null) {
   waiting.set(job.id, { page, job, filler, ctx, needs, limitBefore, until: Date.now() + WAIT_FOR_YOU_MS, enteredAt: 0 });
 }
 
-// The form is stuck on something for you. Boxes it won't go without show on the page (Sent tab), so they can be
-// ticked from your phone; the helper then ticks them here and presses Submit again.
+// Press Submit, noting when: an emailed code counts only if it came after.
+async function submitNow(page, filler, ctx) {
+  ctx.submittedAt = Date.now();
+  return filler.submit(page, ctx);
+}
+
+// The boxes you've agreed to tick on every form (consent, acknowledgements; see boxesForYou). One that won't tick is
+// left for you.
+async function tickAgreements(page) {
+  const ticked = [];
+  for (const box of await boxesForYou(page).catch(() => [])) {
+    try {
+      await tickBoxes(page, [box.key]);
+      ticked.push(box.label);
+    } catch {
+      // stays unticked; the page asks you if the form needs it
+    }
+  }
+  if (ticked.length) log(`  Ticked: ${ticked.map((l) => `“${l.slice(0, 70)}”`).join(', ')}`);
+  return ticked.length;
+}
+
+// The site emailed a security code. Your Gmail filter forwards it to the site within seconds: wait for it, enter it,
+// and see the application through. If none comes, the page (and your phone) ask you for it.
+async function codeFor(page, job, filler, ctx) {
+  log('  The site emailed a security code. Waiting for it…');
+  const since = new Date(ctx.submittedAt - 15_000).toISOString();
+  const end = Date.now() + CODE_WAIT_MS;
+  let note = CODE_NOTE;
+  while (Date.now() < end && !page.isClosed()) {
+    if (await filler.isDone(page).catch(() => false)) return finish(page, job, true);
+    const { code } = await api(`/runner/code?id=${encodeURIComponent(job.id)}&since=${encodeURIComponent(since)}`).catch(() => ({}));
+    if (code) {
+      await enterCode(page, code).catch((err) => log(`  Couldn’t enter it: ${err.message}`));
+      log('  Entered the emailed code.');
+      if (await confirmed(page, filler)) return finish(page, job, true);
+      note = 'The emailed code didn’t go through. Check the email and enter the code on the page or in the helper window.';
+      break;
+    }
+    await sleep(CODE_POLL_MS);
+  }
+  log(`  ${note}`);
+  await report(job.id, 'needs_you', note, 'code');
+  callYou(page, true);
+  return wait(page, job, filler, ctx, 'code');
+}
+
+// The confirmation page, within a while of the code going in.
+async function confirmed(page, filler) {
+  const end = Date.now() + CONFIRM_WAIT_MS;
+  while (Date.now() < end && !page.isClosed()) {
+    if (await filler.isDone(page).catch(() => false)) return true;
+    await sleep(1500);
+  }
+  return false;
+}
+
+// The form is stuck on something for you. Boxes still unticked (some forms only show them after Submit) are ticked
+// and the form submitted once more; after that, they show on the page (Sent tab) so they can be ticked from your
+// phone, and the helper ticks them here and presses Submit again. A site that flagged the submission as spam or a bot
+// isn't sent it again: that's for you to decide.
+const FLAGGED = /spam|robot|\bbot\b|captcha|verif/i;
 async function stuck(page, job, filler, ctx, note, urgent = false) {
+  if (!ctx.retried && !FLAGGED.test(note) && (await boxesForYou(page).catch(() => [])).length) {
+    ctx.retried = true;
+    if (await tickAgreements(page)) return afterSubmit(page, job, filler, ctx, await submitNow(page, filler, ctx));
+  }
   const boxes = await boxesForYou(page).catch(() => []);
   log(`  ${note}`);
   if (boxes.length) log(`  Boxes to tick on the page: ${boxes.map((b) => `“${b.label.slice(0, 70)}”`).join(', ')}`);
@@ -216,12 +285,7 @@ async function stuck(page, job, filler, ctx, note, urgent = false) {
 // What pressing Submit led to.
 async function afterSubmit(page, job, filler, ctx, outcome) {
   if (outcome === 'submitted') return finish(page, job, true);
-  if (outcome === 'code') {
-    log('  The site emailed a verification code. Enter it on the page or in the helper window.');
-    await report(job.id, 'needs_you', CODE_NOTE, 'code');
-    callYou(page, true);
-    return wait(page, job, filler, ctx, 'code');
-  }
+  if (outcome === 'code') return codeFor(page, job, filler, ctx);
   if (outcome.limit) return holdCompany(page, job, outcome.limit);
   // Record what the page shows, so an unexpected message can be diagnosed from the Sent tab.
   await screenshot(page, job, 'after-submit');
@@ -260,7 +324,7 @@ async function checkWaiting() {
         try {
           await tickBoxes(page, JSON.parse(code));
           log(`${job.company}: ticked the boxes you ticked. Submitting.`);
-          await afterSubmit(page, job, filler, w.ctx, await filler.submit(page, w.ctx));
+          await afterSubmit(page, job, filler, w.ctx, await submitNow(page, filler, w.ctx));
         } catch (err) {
           await report(id, 'needs_you', `Couldn’t tick the boxes (${err.message}). Tick them in the helper window and submit there.`);
           await wait(page, job, filler, w.ctx);
@@ -276,13 +340,13 @@ async function checkWaiting() {
       callYou(page, true);
     }
     if (w.needs === 'code') {
-      // Only a code you entered on the page (or gave Claude). The helper never reads your email.
-      const { code } = await api(`/runner/code?id=${encodeURIComponent(id)}`).catch(() => ({}));
+      // A code you entered on the page (or gave Claude), or one your Gmail filter forwarded after the fact.
+      const { code, emailed } = await api(`/runner/code?id=${encodeURIComponent(id)}`).catch(() => ({}));
       if (code) {
         try {
           await enterCode(page, code);
           w.enteredAt = Date.now();
-          log(`${job.company}: entered the code you sent.`);
+          log(`${job.company}: entered the code ${emailed ? 'from your email' : 'you sent'}.`);
         } catch (err) {
           w.needs = null;
           await report(id, 'needs_you', `Couldn’t enter the code (${err.message}). Type it in the helper window.`);
@@ -320,10 +384,11 @@ async function handle({ job, form, answers, prefs = {} }) {
       const n = await uncheckSmsOptIns(page).catch(() => 0);
       if (n) log(`  Unchecked ${n} text-message opt-in${n === 1 ? '' : 's'}.`);
     }
+    await tickAgreements(page);
     const ctx = { form, answers };
     if (missing.length) return stuck(page, job, filler, ctx, `Couldn’t fill: ${missing.join('; ')}. Finish it in the helper window and submit there.`);
     await screenshot(page, job, 'filled');
-    return afterSubmit(page, job, filler, ctx, await filler.submit(page, ctx));
+    return afterSubmit(page, job, filler, ctx, await submitNow(page, filler, ctx));
   } catch (err) {
     if (err instanceof amazon.LimitError) {
       // At Amazon's cap: put the job back (your answers are kept) and pause Amazon until a spot opens.
@@ -387,14 +452,17 @@ function sweepSoon(now = false) {
 // ---------- main loop ----------
 
 // Settings → "Send automatically": the site picks an application with nothing new to answer and hands it over
-// on the next claim.
+// on the next claim. While it keeps finding them (or has more of the queue to look through), the helper asks again
+// right away; once it's been through the queue, once a minute.
 let lastAutosend = 0;
+let autosendMore = false;
 async function autoSend() {
-  if (Date.now() - lastAutosend < AUTOSEND_EVERY_MS) return false;
+  if (!autosendMore && Date.now() - lastAutosend < AUTOSEND_EVERY_MS) return false;
   lastAutosend = Date.now();
-  const { job } = await api('/runner/autosend', { method: 'POST', body: info }).catch(() => ({}));
+  const { job, more } = await api('/runner/autosend', { method: 'POST', body: info }).catch(() => ({}));
+  autosendMore = !!(job || more);
   if (job) log(`Nothing new to answer, sending automatically: ${job.company} · ${job.title}`);
-  return !!job;
+  return autosendMore;
 }
 
 log(`Apply Desk helper ${VERSION}: watching ${cfg.siteUrl}. Leave this running; Ctrl+C to stop.`);
@@ -413,9 +481,9 @@ while (!stopping) {
     }
     await deliver(claim?.outbox);
     if (claim) sweepSoon(claim.sweep);
-    // Paused from the page: stay running, take no work.
-    if (claim?.paused !== wasPaused) {
-      wasPaused = !!claim?.paused;
+    // Paused from the page: stay running, take no work. (The site leaves `paused` out when it isn't.)
+    if (claim && !!claim.paused !== wasPaused) {
+      wasPaused = !!claim.paused;
       log(wasPaused ? 'Paused from the page. Waiting until you resume.' : 'Resumed.');
     }
     if (claim?.paused) {
@@ -428,7 +496,7 @@ while (!stopping) {
       continue;
     }
     if (claim && (await autoSend())) {
-      lastClaim = 0; // it's ready now: claim it right away
+      lastClaim = 0; // one is ready (or more to look through): ask again right away
       continue;
     }
     if (claim && waiting.size === 0) await prepareNext();

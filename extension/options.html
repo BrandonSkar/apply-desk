@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply Desk extension</title>
+<style>
+  :root { color-scheme: light dark; --muted: #6b6862; --good: #1f6b3a; }
+  @media (prefers-color-scheme: dark) { :root { --muted: #a8a49c; --good: #7fcf98; } }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 32px auto; padding: 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  #status { font-weight: 600; color: var(--good); }
+</style>
+</head>
+<body>
+<h1>Apply Desk</h1>
+<p class="muted">Fills the Lever applications you open with “Open and fill” on Apply Desk. You do the CAPTCHA and press Submit; Apply Desk marks the job applied when Lever confirms it.</p>
+<h2 style="font-size:16px;margin:24px 0 4px">Your resume</h2>
+<p class="muted">Attached to each application. It stays in this browser.</p>
+<p id="current">No resume yet.</p>
+<input type="file" id="file" accept=".pdf,.doc,.docx,application/pdf">
+<p id="status" role="status"></p>
+<script src="options.js"></script>
+</body>
+</html>

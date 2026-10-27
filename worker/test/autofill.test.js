@@ -541,6 +541,15 @@ test('Alpaca form: full mailing address on one line, full legal name, location a
   assert.equal(values.other, undefined);
 });
 
+test('a required question with one box to tick takes it; an optional one is left alone', () => {
+  const one = (name, required) => ({ name, type: 'multiselect', required, options: [{ label: 'I understand that next steps will be sent via email and I have marked the sender address above as safe.', value: 'x' }],
+    label: 'Stay Connected | To ensure you receive status updates and interview invitations, please add no-reply@hire.lever.co to your safe sender list.' });
+  const { values, bucket } = autofill({ questions: [one('a', true), one('b', false)] }, profile);
+  assert.deepEqual(values.a, ['I understand that next steps will be sent via email and I have marked the sender address above as safe.']);
+  assert.equal(bucket.a, 'auto');
+  assert.equal(values.b, undefined);
+});
+
 test("today's date: Pacific time, in the label's format", () => {
   const late = new Date('2026-10-27T05:30:00Z'); // still Oct 26 in Seattle
   assert.equal(todayFor("Today's Date (MM/DD/YY)", late), '10/26/26');

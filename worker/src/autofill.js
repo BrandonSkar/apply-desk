@@ -517,9 +517,10 @@ export function autofill(form, profile, bank = new Map(), company = '', { applie
       if (v) { set(v, 'auto'); continue; }
     }
 
-    // Only one choice (e.g. a job with a single location): take it.
-    if (q.type === 'select' && q.required && q.options?.length === 1) {
-      set(q.options[0].label, 'auto');
+    // Only one choice (a job with a single location; one box to tick, "I understand that next steps will be sent via
+    // email"): the form won't go without it, so take it.
+    if ((q.type === 'select' || q.type === 'multiselect') && q.required && q.options?.length === 1) {
+      set(q.type === 'multiselect' ? [q.options[0].label] : q.options[0].label, 'auto');
       continue;
     }
 

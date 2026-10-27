@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS = {
   // Send an application without you when every required question is answered from your profile or past answers.
   autoSend: false,
   autoSendPerDay: 40,
+  // The sites it sends for (Lever is always by hand).
+  autoSendSources: ['greenhouse', 'ashby', 'amazon', 'microsoft'],
   // At most this many applications to one company in this many days (0 = no limit). A company's own posted
   // limit ("a maximum of 5 applications within a 6 month period") applies either way.
   companyCap: 5,

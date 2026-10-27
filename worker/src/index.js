@@ -6,6 +6,7 @@ import { loadForm, JobClosedError } from './forms.js';
 import { autoAnswers, autofill, bankKey, isCoverLetter, looseKey, missingRequired, PROFILE_DRIVEN, toBank, wantsSms } from './autofill.js';
 import { clearCookie, hasSession, hasToken, passwordMatches, sessionCookie } from './auth.js';
 import { draftable, draftAnswers } from './drafts.js';
+import { parseEmail, readCodeEmail, sameCompany } from './codes.js';
 import { dailySummary, email, localDay, PAGE_URL } from './notify.js';
 
 const AUTO_SOURCES = ['greenhouse', 'lever', 'ashby', 'amazon', 'microsoft'];
@@ -16,8 +17,13 @@ const SIGNED_IN_SOURCES = ['amazon', 'microsoft'];
 const autoWhere = (paused = {}) => {
   const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
   const signedIn = open.length ? ` OR (source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NOT NULL)` : '';
-  return `(source IN ('greenhouse','lever','ashby')${signedIn})`;
+  return `(source IN ('greenhouse','ashby')${signedIn})`;
 };
+// Lever's bot check turns away a browser that software drives, even after you solve its CAPTCHA, so the helper
+// can't send these. You answer them here as usual, then "Open and fill" opens the form in your own Chrome, where
+// the Apply Desk extension fills it in (extension/) and you do the CAPTCHA and press Submit.
+const HAND_SOURCES = ['lever'];
+const handWhere = () => `(source IN (${HAND_SOURCES.map((s) => `'${s}'`).join(',')}))`;
 const manualWhere = (paused = {}) => {
   const open = SIGNED_IN_SOURCES.filter((s) => !paused[s]);
   return open.length ? `(source IN (${open.map((s) => `'${s}'`).join(',')}) AND form IS NULL)` : '(0)';
@@ -66,6 +72,14 @@ export default {
     ctx.waitUntil(refreshSlice(env));
     ctx.waitUntil(draftAhead(env, '', { loadForms: false }).catch((err) => console.error('draftAhead', err)));
     ctx.waitUntil(eveningSummary(env).catch((err) => console.error('summary', err)));
+  },
+  // codes@brandonskar.com: the security-code emails your Gmail filter forwards (see codes.js).
+  async email(message, env) {
+    try {
+      await receiveEmail(message, env);
+    } catch (err) {
+      console.error('email', err);
+    }
   },
 };
 
@@ -124,7 +138,7 @@ async function api(request, env, path, url, ctx) {
   if (path === '/refresh' && method === 'POST') return json(await refreshNow(env));
   if (path === '/runner/claim' && method === 'POST') return json(await claim(env, body));
   if (path === '/runner/result' && method === 'POST') return runnerResult(env, body);
-  if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || ''));
+  if (path === '/runner/code' && method === 'GET') return json(await takeCode(env, url.searchParams.get('id') || '', url.searchParams.get('since')));
   if (path === '/runner/prepare' && method === 'POST') return json(await claimPrepare(env));
   if (path === '/runner/form' && method === 'POST') return saveRunnerForm(env, body);
   if (path === '/runner/jobs' && method === 'POST') return saveFoundJobs(env, body);
@@ -145,10 +159,11 @@ async function api(request, env, path, url, ctx) {
     return json({ ok: true, outbox: /^0\.[0-6]\./.test(String(body.version || '0.0.')) ? [] : await takeOutbox(env) });
   }
 
-  const m = /^\/jobs\/([^/]+)\/(answers|status|code|boxes)$/.exec(path);
+  const m = /^\/jobs\/([^/]+)\/(answers|hand|status|code|boxes)$/.exec(path);
   if (m && method === 'POST') {
     const id = decodeURIComponent(m[1]);
     if (m[2] === 'answers') return saveAnswers(env, id, body);
+    if (m[2] === 'hand') return saveAnswers(env, id, body, { byHand: true });
     if (m[2] === 'code') return giveCode(env, id, body);
     if (m[2] === 'boxes') return giveBoxes(env, id, body);
     return setStatus(env, id, body);
@@ -166,6 +181,7 @@ async function state(env, since) {
     `SELECT
        SUM(status = 'new' AND ${autoWhere(paused)}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_auto,
        SUM(status = 'new' AND ${manualWhere(paused)}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_manual,
+       SUM(status = 'new' AND ${handWhere()}${notHeld(held)} AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?3)) AS queue_hand,
        SUM(status = 'ready') AS ready,
        SUM(status = 'submitting') AS submitting,
        SUM(status = 'needs_you') AS needs_you,
@@ -190,13 +206,17 @@ async function state(env, since) {
   };
 }
 
-// The auto queue in the order it's served: the newest postings first, ones moved to "later" at the back.
-async function queueQuery(env, lane, limit, skipId = '') {
+// A queue in the order it's served: the newest postings first, ones moved to "later" at the back. Lanes: auto (the
+// helper sends them), hand (you send them from your own Chrome), manual (Amazon / Microsoft not read yet).
+const LANES = { auto: autoWhere, hand: handWhere, manual: manualWhere };
+// `sources`: only these sites (checked names from settings).
+async function queueQuery(env, lane, limit, skipId = '', sources = null) {
   const settings = await getSettings(env);
   const fresh = new Date(Date.now() - settings.maxAgeDays * 864e5).toISOString();
   const paused = await getKV(env, 'paused', {});
+  const only = sources ? ` AND source IN (${sources.filter((x) => /^[a-z]+$/.test(x)).map((x) => `'${x}'`).join(',') || "''"})` : '';
   return env.DB.prepare(
-    `SELECT * FROM jobs WHERE status = 'new' AND ${lane === 'manual' ? manualWhere(paused) : autoWhere(paused)}${notHeld(await getHolds(env))}
+    `SELECT * FROM jobs WHERE status = 'new' AND ${(LANES[lane] || autoWhere)(paused)}${only}${notHeld(await getHolds(env))}
        AND (posted_at IS NULL OR posted_at >= ?1) AND (min_years IS NULL OR min_years <= ?2) AND id != ?3
      ORDER BY later ASC, posted_at DESC LIMIT ?4`,
   ).bind(fresh, settings.maxYearsRequired || 99, skipId, limit);
@@ -372,10 +392,15 @@ async function list(env, view) {
   return { jobs: results.map(publicJob) };
 }
 
-async function saveAnswers(env, id, body) {
+// Send: the helper submits it. byHand ("Open and fill"): your answers are kept (and remembered) and the job stays in
+// the queue until you've sent it from your own Chrome; the Apply Desk extension marks it applied when you do.
+async function saveAnswers(env, id, body, { byHand = false } = {}) {
   const job = await env.DB.prepare('SELECT * FROM jobs WHERE id = ?').bind(id).first();
   if (!job) return json({ error: 'No such job.' }, 404);
   if (!AUTO_SOURCES.includes(job.source) || !job.form) return json({ error: 'This job has no form to fill.' }, 400);
+  if (HAND_SOURCES.includes(job.source) !== byHand) {
+    return json({ error: byHand ? 'The helper sends this one: press Send.' : 'Lever turns the helper away: use Open and fill.' }, 409);
+  }
   // Sending it twice would submit it twice (e.g. auto-send got to it while it sat open on your page).
   if (job.status !== 'new') return json({ error: 'This application was already sent. It’s on the Sent tab.' }, 409);
 
@@ -394,8 +419,10 @@ async function saveAnswers(env, id, body) {
 
   const t = now();
   const writes = [
-    env.DB.prepare(`UPDATE jobs SET answers = ?, status = 'ready', note = NULL, sent_at = ?, updated_at = ? WHERE id = ? AND status = 'new'`)
-      .bind(JSON.stringify(answers), t, t, id),
+    byHand
+      ? env.DB.prepare(`UPDATE jobs SET answers = ?, updated_at = ? WHERE id = ? AND status = 'new'`).bind(JSON.stringify(answers), t, id)
+      : env.DB.prepare(`UPDATE jobs SET answers = ?, status = 'ready', note = NULL, sent_at = ?, updated_at = ? WHERE id = ? AND status = 'new'`)
+        .bind(JSON.stringify(answers), t, t, id),
   ];
   // Remember answers to questions that will come up again at other companies.
   for (const q of form.questions) {
@@ -619,7 +646,8 @@ async function autoSendNext(env) {
   const showing = await getKV(env, 'showing', null);
   const skip = showing && Date.now() - Date.parse(showing.at) < 30 * 60_000 ? showing.id : '';
   const cursor = await getKV(env, 'autosendCursor', 0);
-  const { results } = await (await queueQuery(env, 'auto', AUTOSEND_BATCH + cursor, skip)).all();
+  const sources = settings.autoSendSources || DEFAULT_SETTINGS.autoSendSources;
+  const { results } = await (await queueQuery(env, 'auto', AUTOSEND_BATCH + cursor, skip, sources)).all();
   const batch = results.slice(cursor);
   await setKV(env, 'autosendCursor', batch.length < AUTOSEND_BATCH ? 0 : cursor + AUTOSEND_BATCH);
   const profile = await getProfile(env);
@@ -637,7 +665,8 @@ async function autoSendNext(env) {
     ).bind(JSON.stringify(answers), t, t, job.id).run();
     if (r.meta.changes) return { job: publicJob(job) };
   }
-  return { job: null };
+  // None in this slice of the queue: `more` while there's more of it to look through, so the helper asks again now.
+  return { job: null, more: batch.length >= AUTOSEND_BATCH };
 }
 
 // ---------- evening summary ----------
@@ -784,11 +813,43 @@ async function giveBoxes(env, id, body) {
   return json({ ok: true });
 }
 
-async function takeCode(env, id) {
-  const row = await env.DB.prepare(`SELECT code FROM jobs WHERE id = ? AND needs IN ('code', 'boxes') AND code IS NOT NULL`).bind(id).first();
+// What you sent from the page (a code, or the boxes you ticked); otherwise a code emailed for the job's company
+// since `since` (when the helper pressed Submit). Each is handed over once.
+async function takeCode(env, id, since) {
+  const row = await env.DB.prepare('SELECT company, needs, code FROM jobs WHERE id = ?').bind(id).first();
   if (!row) return { code: null };
-  await env.DB.prepare('UPDATE jobs SET code = NULL WHERE id = ?').bind(id).run();
-  return { code: row.code };
+  if (row.code && ['code', 'boxes'].includes(row.needs)) {
+    await env.DB.prepare('UPDATE jobs SET code = NULL WHERE id = ?').bind(id).run();
+    return { code: row.code };
+  }
+  if (row.needs === 'boxes') return { code: null };
+  const codes = await getKV(env, 'mailedCodes', []);
+  const after = validISO(since) || new Date(Date.now() - MAILED_CODE_MS).toISOString();
+  // A code that names no company ("Your verification code is ...") goes to the application just submitted.
+  const i = codes.findLastIndex((c) => c.at >= after && (sameCompany(c.company, row.company) || (!c.company && validISO(since))));
+  if (i < 0) return { code: null };
+  const [hit] = codes.splice(i, 1);
+  await setKV(env, 'mailedCodes', codes);
+  return { code: hit.code, emailed: true };
+}
+
+// Codes your Gmail filter forwarded, kept until the helper takes them (or this long).
+const MAILED_CODE_MS = 30 * 60_000;
+
+async function receiveEmail(message, env) {
+  const mail = await parseEmail(await new Response(message.raw).arrayBuffer());
+  const profile = await getProfile(env);
+  // Adding codes@ as a forwarding address in Gmail sends a confirmation link here first: pass it on to you.
+  if (/@google\.com$/i.test(mail.from?.address || '') && /forwarding/i.test(mail.subject || '')) {
+    if (profile.email) await message.forward(profile.email);
+    return;
+  }
+  const found = readCodeEmail(mail);
+  if (!found) return;
+  const codes = (await getKV(env, 'mailedCodes', [])).filter((c) => Date.now() - Date.parse(c.at) < MAILED_CODE_MS);
+  codes.push({ ...found, at: now() });
+  await setKV(env, 'mailedCodes', codes.slice(-20));
+  console.log(`Emailed code for ${found.company || 'an application'}`);
 }
 
 const pickRunnerInfo = (b) => ({ version: String(b.version || '').slice(0, 20), host: String(b.host || '').slice(0, 60) });
@@ -969,6 +1030,7 @@ async function saveSettings(env, body) {
   s.remoteUS = body.remoteUS !== false;
   s.autoSend = body.autoSend === true;
   s.autoSendPerDay = num(body.autoSendPerDay, 1, 200, s.autoSendPerDay);
+  s.autoSendSources = (strings(body.autoSendSources, 10) || s.autoSendSources).filter((x) => DEFAULT_SETTINGS.autoSendSources.includes(x));
   s.companyCap = num(body.companyCap, 0, 50, s.companyCap);
   s.companyCapDays = num(body.companyCapDays, 1, 365, s.companyCapDays);
   for (const k of ['pushNeedsYou', 'summaryPush', 'summaryEmail']) s[k] = body[k] !== false;
@@ -1015,6 +1077,7 @@ function publicJob(j) {
     id: j.id, source: j.source, company: j.company, title: j.title, location: j.location, remote: !!j.remote,
     url: j.url, apply_url: j.apply_url, posted_at: j.posted_at, status: j.status, note: j.note, needs: j.needs,
     boxes: j.needs === 'boxes' && j.ask ? JSON.parse(j.ask).boxes || [] : undefined,
+    byHand: HAND_SOURCES.includes(j.source),
     sent_at: j.sent_at, submitted_at: j.submitted_at, updated_at: j.updated_at,
   };
 }

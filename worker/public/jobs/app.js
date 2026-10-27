@@ -69,7 +69,7 @@ function toast(msg, kind = '') {
   toastTimer = setTimeout(() => (el.hidden = true), kind === 'bad' ? 6000 : 3500);
 }
 
-const SOURCE_NAMES = { greenhouse: 'Greenhouse', lever: 'Lever', amazon: 'Amazon', microsoft: 'Microsoft' };
+const SOURCE_NAMES = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', amazon: 'Amazon', microsoft: 'Microsoft' };
 
 // ---------- header ----------
 
@@ -112,7 +112,7 @@ async function loadState() {
     $('#alert-text').textContent = text;
     $('#alert-go').hidden = !codes;
 
-    $('#n-queue').textContent = s.counts.queue_auto || '';
+    $('#n-queue').textContent = s.counts.queue_auto + (s.counts.queue_hand || 0) || '';
     $('#n-attn').textContent = s.counts.needs_you + s.counts.failed || '';
     return s;
   } catch (err) {
@@ -178,21 +178,47 @@ function quickToggle() {
   return h('label', { class: 'check quick-toggle' }, box, 'Only jobs with nothing to answer (review and send)');
 }
 
+// Two queues: Automatic (the helper sends them) and By hand (Lever, which turns the helper away: you send them from
+// your own Chrome, filled in by the Apply Desk extension). The choice is remembered on this device.
+function handLane() {
+  try {
+    return localStorage.getItem('lane') === 'hand';
+  } catch {
+    return false;
+  }
+}
+
+function laneSwitch() {
+  const c = lastState?.counts || {};
+  const pick = (hand) => () => {
+    try { localStorage.setItem('lane', hand ? 'hand' : 'auto'); } catch {}
+    renderQueue();
+  };
+  const tab = (hand, text, n) => h('button', {
+    type: 'button', class: 'lane', 'aria-pressed': String(handLane() === hand), onclick: pick(hand),
+  }, text, n ? h('span', { class: 'pill' }, n) : '');
+  return h('div', { class: 'lanes' },
+    h('div', { class: 'lane-tabs', role: 'group', 'aria-label': 'Queue' },
+      tab(false, 'Automatic', c.queue_auto), tab(true, 'By hand', c.queue_hand)),
+    !handLane() && quickToggle());
+}
+
 async function renderQueue() {
   const panel = $('#tab-queue');
-  const quick = quickMode();
-  panel.replaceChildren(quickToggle(), h('div', { class: 'loading' }, quick ? 'Finding a job with nothing to answer…' : 'Finding the next job…'));
+  const hand = handLane();
+  const quick = !hand && quickMode();
+  panel.replaceChildren(laneSwitch(), h('div', { class: 'loading' }, quick ? 'Finding a job with nothing to answer…' : 'Finding the next job…'));
   try {
-    current = await api(`/next?lane=${quick ? 'quick' : 'auto'}`);
+    current = await api(`/next?lane=${hand ? 'hand' : quick ? 'quick' : 'auto'}`);
   } catch (err) {
-    panel.replaceChildren(quickToggle(), errorCard(err));
+    panel.replaceChildren(laneSwitch(), errorCard(err));
     return;
   }
   if (!current.job) {
-    panel.replaceChildren(quickToggle(), emptyQueue(current.note));
+    panel.replaceChildren(laneSwitch(), hand ? emptyHand() : emptyQueue(current.note));
     return;
   }
-  panel.replaceChildren(quickToggle(), jobCard(current));
+  panel.replaceChildren(laneSwitch(), jobCard(current));
   const first = panel.querySelector('.qsection .field input, .qsection .field textarea, .qsection .field select');
   if (first && matchMedia('(min-width: 700px)').matches) first.focus({ preventScroll: true });
 }
@@ -211,12 +237,12 @@ function jobCard({ job, form, fill }) {
   const groups = { open: [], suggested: [], auto: [], optional: [] };
   for (const q of form.questions) groups[fill.bucket[q.name] || (q.required ? 'open' : 'optional')].push(q);
 
-  const formEl = h('form', { class: 'qform', novalidate: true, onsubmit: (e) => { e.preventDefault(); sendCurrent(formEl); } });
+  const formEl = h('form', { class: 'qform', novalidate: true, onsubmit: (e) => { e.preventDefault(); (job.byHand ? openAndFill : sendCurrent)(formEl); } });
 
   if (groups.open.length) {
     formEl.append(h('div', { class: 'qsection' }, h('h3', {}, 'Questions for you'), groups.open.map((q) => field(q, fill.values[q.name]))));
   } else {
-    formEl.append(h('p', { class: 'all-set' }, 'Nothing new to answer. Glance over the prefilled answers, then send.'));
+    formEl.append(h('p', { class: 'all-set' }, `Nothing new to answer. Glance over the prefilled answers, then ${job.byHand ? 'open and fill' : 'send'}.`));
   }
   if (groups.suggested.length) {
     formEl.append(h('div', { class: 'qsection' },
@@ -240,13 +266,21 @@ function jobCard({ job, form, fill }) {
       groups.auto.map((q) => field(q, fill.values[q.name]))));
   }
 
-  formEl.append(h('div', { class: 'actions' },
-    h('button', { type: 'button', class: 'btn', onclick: () => moveOn(job, 'skipped', 'Skipped') }, 'Skip'),
-    h('button', { type: 'button', class: 'btn', onclick: () => moveOn(job, 'later', 'Moved to the back of the queue') }, 'Later'),
-    h('span', { class: 'spacer' }),
-    h('span', { class: 'hint' }, 'Ctrl + Enter'),
-    h('button', { type: 'submit', class: 'btn btn-primary' }, 'Send & next →'),
-  ));
+  const skip = h('button', { type: 'button', class: 'btn', onclick: () => moveOn(job, 'skipped', 'Skipped') }, 'Skip');
+  const later = h('button', { type: 'button', class: 'btn', onclick: () => moveOn(job, 'later', 'Moved to the back of the queue') }, 'Later');
+  if (job.byHand) {
+    formEl.append(
+      !document.documentElement.dataset.applyDesk && extensionHint(),
+      h('p', { class: 'hand-status muted small', hidden: true },
+        'Opened in a new tab and filled in. Check it, do the CAPTCHA and press Submit there; this page moves on by itself once Lever confirms.'),
+      h('div', { class: 'actions' }, skip, later, h('span', { class: 'spacer' }),
+        h('button', { type: 'button', class: 'btn', onclick: () => markApplied(job.id) }, 'I applied'),
+        h('button', { type: 'submit', class: 'btn btn-primary' }, 'Open and fill ↗')));
+  } else {
+    formEl.append(h('div', { class: 'actions' }, skip, later, h('span', { class: 'spacer' }),
+      h('span', { class: 'hint' }, 'Ctrl + Enter'),
+      h('button', { type: 'submit', class: 'btn btn-primary' }, 'Send & next →')));
+  }
 
   return h('article', { class: 'card' },
     jobMeta(job),
@@ -339,19 +373,78 @@ function markMissing(root, names) {
   first?.querySelector('input, textarea, select')?.focus({ preventScroll: true });
 }
 
-async function sendCurrent(formEl) {
-  if (!current?.job) return;
-  const answers = readFields(formEl);
+// Marks required questions left empty; true when there are any.
+function requiredMissing(formEl, answers) {
   const missing = new Set();
   for (const wrap of formEl.querySelectorAll('.field[data-required="1"]')) {
     const v = answers[wrap.dataset.name];
     if (wrap.dataset.type !== 'file' && (v == null || v === '' || (Array.isArray(v) && !v.length))) missing.add(wrap.dataset.name);
   }
-  if (missing.size) {
-    markMissing(formEl, missing);
-    toast(`${missing.size} required question${missing.size === 1 ? '' : 's'} still empty`, 'bad');
-    return;
+  if (!missing.size) return false;
+  markMissing(formEl, missing);
+  toast(`${missing.size} required question${missing.size === 1 ? '' : 's'} still empty`, 'bad');
+  return true;
+}
+
+// ---------- by hand (Lever) ----------
+
+// The answers travel to the extension in the form's address, after the "#" (which is never sent to Lever). The
+// extension takes them out of the address as the page starts loading, before Lever's scripts run, then fills each
+// field by its name on the page.
+function fillHash(job, form, answers) {
+  const fields = form.questions
+    .filter((q) => q.type !== 'file' && answers[q.name] != null && answers[q.name] !== '' && !(Array.isArray(answers[q.name]) && !answers[q.name].length))
+    .map((q) => ({ name: q.name, type: q.type, kind: q.kind || '', label: q.label, value: answers[q.name] }));
+  const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, id: job.id, company: job.company, title: job.title, fields }));
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return `applydesk=${btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
+function openAndFill(formEl) {
+  if (!current?.job) return;
+  const answers = readFields(formEl);
+  if (requiredMissing(formEl, answers)) return;
+  const { job, form } = current;
+  window.open(`${job.apply_url}#${fillHash(job, form, answers)}`, '_blank', 'noopener');
+  formEl.querySelector('.hand-status').hidden = false;
+  // Kept for next time (and remembered for other companies); the job stays here until it's sent.
+  post(`/jobs/${encodeURIComponent(job.id)}/hand`, { answers }).catch((err) => toast(err.message, 'bad'));
+}
+
+async function markApplied(id) {
+  try {
+    await post(`/jobs/${encodeURIComponent(id)}/status`, { status: 'applied_manual' });
+    toast('Applied. It’s on the Sent tab.');
+    loadState();
+    if (activeTab === 'queue' && current?.job?.id === id) renderQueue();
+  } catch (err) {
+    toast(err.message, 'bad');
   }
+}
+
+// The extension saw Lever's "thanks" page for a job opened from here.
+window.addEventListener('message', (e) => {
+  if (e.source !== window || e.origin !== location.origin || e.data?.type !== 'apply-desk:applied') return;
+  markApplied(String(e.data.id));
+});
+
+function extensionHint() {
+  return h('div', { class: 'hint-box' },
+    h('strong', {}, 'One-time setup on your PC: the Apply Desk extension. '),
+    'In Chrome, open chrome://extensions, turn on Developer mode, click Load unpacked, and choose the “extension” folder in your Apply Desk folder. Then open the extension’s Details → Extension options and pick your resume. Reload this page after.');
+}
+
+function emptyHand() {
+  return h('div', { class: 'card center' },
+    h('h2', {}, 'Nothing to send by hand'),
+    h('p', { class: 'muted' }, 'Lever jobs land here: the helper can’t send them, because Lever turns away a browser that software drives. Open and fill sends them from your own Chrome instead.'));
+}
+
+async function sendCurrent(formEl) {
+  if (!current?.job) return;
+  const answers = readFields(formEl);
+  if (requiredMissing(formEl, answers)) return;
   const btn = formEl.querySelector('button[type=submit]');
   btn.disabled = true;
   try {
@@ -393,7 +486,7 @@ document.addEventListener('keydown', (e) => {
     const f = $('#tab-queue form.qform');
     if (f) {
       e.preventDefault();
-      sendCurrent(f);
+      (current?.job?.byHand ? openAndFill : sendCurrent)(f);
     }
   }
 });
@@ -682,6 +775,7 @@ async function renderSettings() {
     for (const el of form.querySelectorAll('input[type=number]')) body[el.name] = Number(el.value);
     for (const el of form.querySelectorAll('input[type=text][name]')) body[el.name] = el.value.trim();
     for (const el of form.querySelectorAll('input[type=checkbox][name]')) body[el.name] = el.checked;
+    body.autoSendSources = [...form.querySelectorAll('input[data-autosend-source]:checked')].map((el) => el.value);
     try {
       await api('/settings', { method: 'PUT', body });
       toast('Settings saved. New searches use them from the next refresh.');
@@ -696,6 +790,10 @@ async function renderSettings() {
   h('fieldset', {}, h('legend', {}, 'Sending'),
     h('p', { class: 'muted small' }, 'With this on, an application where every required question is answered from your profile and past answers goes to the helper without you pressing Send. Best guesses and Claude’s drafts still wait for you. Each one is on the Sent tab with its confirmation screenshot.'),
     check('autoSend', 'Send automatically when there’s nothing new to answer'),
+    h('div', { class: 'label' }, 'For these sites (Lever is always by hand)'),
+    h('div', { class: 'choices' }, ['greenhouse', 'ashby', 'amazon', 'microsoft'].map((site) => h('label', { class: 'choice' },
+      h('input', { type: 'checkbox', 'data-autosend-source': site, value: site, checked: (s.autoSendSources || []).includes(site) }),
+      h('span', {}, SOURCE_NAMES[site])))),
     h('div', { class: 'grid' }, number('autoSendPerDay', 'At most this many a day (all sends count)'))),
   h('fieldset', {}, h('legend', {}, 'Per company'),
     h('p', { class: 'muted small' }, 'Lots of applications to one company can read as spam to its recruiters. When a company’s own posting states a limit (Coinbase: 5 in 6 months), that limit applies too. Amazon and Microsoft follow their own site limits.'),

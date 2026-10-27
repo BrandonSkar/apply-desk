@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Apply Desk",
+  "version": "1.0.0",
+  "description": "Fills the Lever applications you open from Apply Desk (brandonskar.com/jobs). You do the CAPTCHA and press Submit.",
+  "permissions": ["storage"],
+  "options_page": "options.html",
+  "content_scripts": [
+    { "matches": ["https://jobs.lever.co/*"], "js": ["lever.js"], "run_at": "document_start" },
+    { "matches": ["https://brandonskar.com/jobs*"], "js": ["page.js"], "run_at": "document_start" }
+  ]
+}
